@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: co3103-g11-central-identity
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
