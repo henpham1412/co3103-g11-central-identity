@@ -125,6 +125,17 @@ The exact database name, connection settings, and schema migration workflow will
 
 Do not commit local database passwords, signing keys, or other secrets to the repository. Keep machine-specific configuration separate from shared project files.
 
+JWT signing requires `JWT_SECRET`, a Base64-encoded key containing at least 32 random bytes
+(for example, generate one with `openssl rand -base64 32`). Set it in the application's environment.
+`JWT_EXPIRATION_MS` defaults to `86400000` (24 hours), and `JWT_REFRESH_EXPIRATION_MS`
+defaults to `604800000` (7 days). Refresh token issuance is not implemented yet.
+
+Run the JWT unit tests without a database or an environment signing key:
+
+```powershell
+.\mvnw.cmd test '-Dtest=JwtServiceTest' '-Dmaven.compiler.release=24'
+```
+
 ### 5.5 Run the Application
 
 After configuring a reachable local PostgreSQL database and the corresponding Spring Boot datasource settings, run:
