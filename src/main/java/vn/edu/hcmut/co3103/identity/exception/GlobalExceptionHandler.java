@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -64,6 +65,31 @@ public class GlobalExceptionHandler {
                 .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
                         .validationErrors(validationErrors)
                         .build());
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiErrorResponse> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException exception, HttpServletRequest request) {
+        // Parser messages can contain raw request tokens, including passwords.
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(errorResponse(HttpStatus.BAD_REQUEST,
+                        "Required request body is missing or malformed", request).build());
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ApiErrorResponse> handleIllegalArgument(
+            IllegalArgumentException exception, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(errorResponse(HttpStatus.BAD_REQUEST, "Invalid request argument", request).build());
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ApiErrorResponse> handleUnexpectedException(
+            Exception exception, HttpServletRequest request) {
+        log.error("Unhandled exception for request {}", request.getRequestURI(), exception);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(errorResponse(HttpStatus.INTERNAL_SERVER_ERROR,
+                        "An unexpected internal error occurred", request).build());
     }
 
     private ApiErrorResponse.ApiErrorResponseBuilder errorResponse(
