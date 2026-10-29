@@ -26,5 +26,6 @@ public class ApiErrorResponse {
     private Instant timestamp = Instant.now();
 
     private String path;
+    private Instant lockedUntil;
     private Map<String, String> validationErrors;
 }

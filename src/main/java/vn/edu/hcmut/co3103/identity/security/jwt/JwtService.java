@@ -32,6 +32,10 @@ public class JwtService {
         this.jwtParser = Jwts.parser().verifyWith(signingKey).build();
     }
 
+    public String generateToken(User user) {
+        return generateToken(user, null);
+    }
+
     public String generateToken(User user, String clientId) {
         Map<String, Object> claims = new HashMap<>();
         claims.put("userId", user.getUserId().toString());

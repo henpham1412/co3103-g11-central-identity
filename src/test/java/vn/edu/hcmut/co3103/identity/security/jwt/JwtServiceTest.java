@@ -89,6 +89,17 @@ class JwtServiceTest {
     }
 
     @Test
+    void generatesTokenFromUserWithoutClientId() {
+        String token = jwtService.generateToken(user);
+
+        assertTrue(jwtService.isTokenValid(token, userDetails));
+        assertEquals(EMAIL, jwtService.extractEmail(token));
+        assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, claims -> claims.get("userId")));
+        assertEquals(user.getFullName(), jwtService.extractClaim(token, claims -> claims.get("fullName")));
+        assertNull(jwtService.extractClaim(token, claims -> claims.get("clientId")));
+    }
+
+    @Test
     void generatesTokenWhenOptionalClientIdIsAbsent() {
         String token = jwtService.generateToken(user, null);
 
