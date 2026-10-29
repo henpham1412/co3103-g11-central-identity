@@ -1,9 +1,10 @@
 package vn.edu.hcmut.co3103.identity.dto.auth.request;
 
+import com.fasterxml.jackson.annotation.JsonSetter;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
-import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -15,7 +16,6 @@ import java.util.Locale;
 @Setter
 @Builder
 @NoArgsConstructor
-@AllArgsConstructor
 public class RegisterRequest {
 
     @NotBlank(message = "Email is required")
@@ -29,14 +29,24 @@ public class RegisterRequest {
 
     @NotBlank(message = "Full name is required")
     @Size(max = 150, message = "Full name must not exceed 150 characters")
+    @Pattern(regexp = "^[^\\p{Cc}]*$", message = "Full name contains invalid characters")
     private String fullName;
 
     private String clientId;
+
+    // Jackson can choose the property-based constructor instead of calling setters.
+    public RegisterRequest(String email, String password, String fullName, String clientId) {
+        this.email = normalizeEmail(email);
+        this.password = password;
+        this.fullName = fullName;
+        this.clientId = clientId;
+    }
 
     private static String normalizeEmail(String email) {
         return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
     }
 
+    @JsonSetter("email")
     public void setEmail(String email) {
         this.email = normalizeEmail(email);
     }

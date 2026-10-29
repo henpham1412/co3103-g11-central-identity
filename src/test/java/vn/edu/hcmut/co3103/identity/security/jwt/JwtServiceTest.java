@@ -12,17 +12,24 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.GrantedAuthority;
 import vn.edu.hcmut.co3103.identity.config.JwtProperties;
 import vn.edu.hcmut.co3103.identity.entity.User;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
+import java.util.HashMap;
+import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -43,6 +50,7 @@ class JwtServiceTest {
     private SecretKey signingKey;
     private User user;
     private UserDetails userDetails;
+    private UserDetails identityDetails;
 
     @BeforeEach
     void setUp() {
@@ -60,6 +68,7 @@ class JwtServiceTest {
                 .password("unused-password-hash")
                 .authorities("READ_PROFILE")
                 .build();
+        identityDetails = new IdentityUserDetails(user);
     }
 
     @Test
@@ -76,8 +85,10 @@ class JwtServiceTest {
 
         assertAll(
                 () -> assertEquals(3, token.split("\\.").length),
-                () -> assertEquals(EMAIL, claims.getSubject()),
+                () -> assertEquals(user.getUserId().toString(), claims.getSubject()),
                 () -> assertEquals(user.getUserId().toString(), claims.get("userId", String.class)),
+                () -> assertEquals(EMAIL, claims.get("email", String.class)),
+                () -> assertEquals("USER", claims.get("role", String.class)),
                 () -> assertEquals(user.getFullName(), claims.get("fullName", String.class)),
                 () -> assertEquals(CLIENT_ID, claims.get("clientId", String.class)),
                 () -> assertTrue(claims.getIssuedAt().getTime() >= beforeGeneration - 999),
@@ -115,20 +126,107 @@ class JwtServiceTest {
                 userDetails);
 
         assertEquals(EMAIL, jwtService.extractEmail(token));
+        assertEquals(EMAIL, jwtService.extractClaim(token, claims -> claims.get("email", String.class)));
+        assertEquals("USER", jwtService.extractClaim(token, claims -> claims.get("role", String.class)));
+        assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, Claims::getSubject));
         assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, claims -> claims.get("userId")));
         assertEquals(user.getFullName(), jwtService.extractClaim(token, claims -> claims.get("fullName")));
         assertEquals(CLIENT_ID, jwtService.extractClaim(token, claims -> claims.get("clientId")));
     }
 
     @Test
+    void userBackedPrincipalKeepsAuthoritativeIdentityAcrossBothOverloads() {
+        Map<String, Object> overrides = Map.of("userId", UUID.randomUUID().toString(),
+                "email", "attacker@example.com", "fullName", "Other Name", "role", "ADMIN", "clientId", CLIENT_ID);
+        for (String token : new String[]{jwtService.generateToken(identityDetails),
+                jwtService.generateToken(overrides, identityDetails)}) {
+            Claims claims = jwtService.extractClaim(token, value -> value);
+            assertEquals(user.getUserId().toString(), claims.getSubject());
+            assertEquals(claims.getSubject(), claims.get("userId"));
+            assertEquals(EMAIL, claims.get("email"));
+            assertEquals(user.getFullName(), claims.get("fullName"));
+            assertEquals("USER", claims.get("role"));
+        }
+        assertEquals(CLIENT_ID, jwtService.extractClaim(jwtService.generateToken(overrides, identityDetails),
+                claims -> claims.get("clientId")));
+    }
+
+    @Test
+    void rejectsGenericPrincipalWithoutIdentityInsteadOfUsingEmailSubject() {
+        assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(userDetails));
+        assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(Map.of(), userDetails));
+        assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(
+                Map.of("userId", user.getUserId().toString()), userDetails));
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidUserIds")
+    void rejectsInvalidUserIdClaims(Object userId) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("userId", userId);
+        claims.put("fullName", user.getFullName());
+        assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(claims, userDetails));
+    }
+
+    static Stream<Object> invalidUserIds() {
+        return Stream.of(null, "", " ", EMAIL, "not-a-uuid", "1-1-1-1-1", 123,
+                "00000000-0000-0000-0000-000000000000 ");
+    }
+
+    @Test
+    void acceptsUuidValueAndDoesNotMutateCallerClaims() {
+        Map<String, Object> claims = Map.of("userId", user.getUserId(), "fullName", user.getFullName());
+        String token = jwtService.generateToken(claims, userDetails);
+        assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, Claims::getSubject));
+        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
+        assertEquals(user.getUserId(), claims.get("userId"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"email", "role", "fullName"})
+    void rejectsBlankOrNonStringIdentityClaims(String name) {
+        for (Object invalid : new Object[]{null, "", " ", 123}) {
+            Map<String, Object> claims = new HashMap<>(Map.of(
+                    "userId", user.getUserId(), "fullName", user.getFullName()));
+            UserDetails principal = userDetails;
+            if (name.equals("email")) {
+                principal = org.mockito.Mockito.mock(UserDetails.class);
+                org.mockito.Mockito.when(principal.getUsername()).thenReturn(invalid instanceof String s ? s : null);
+            } else {
+                claims.put(name, invalid);
+            }
+            // A null role uses the documented USER default; other empty or malformed claims must fail closed.
+            if (name.equals("role") && invalid == null) {
+                continue;
+            }
+            UserDetails tokenPrincipal = principal;
+            assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(claims, tokenPrincipal));
+        }
+    }
+
+    @Test
+    void rejectsUserWithoutPersistedIdOrFullName() {
+        user.setUserId(null);
+        assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(user));
+        ((User) identityDetails).setUserId(null);
+        assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(identityDetails));
+        assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(
+                Map.of("userId", UUID.randomUUID().toString()), identityDetails));
+        user.setUserId(UUID.randomUUID());
+        user.setFullName(null);
+        assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(user));
+    }
+
+    @Test
     void usesConfiguredLifetimeAndPreventsCustomClaimsOverridingSubjectOrDates() {
         properties.setExpirationMs(300000L);
         String token = jwtService.generateToken(Map.of(
-                "sub", "other@example.com", "iat", new Date(0), "exp", new Date(0)), userDetails);
+                "sub", "other@example.com", "iat", new Date(0), "exp", new Date(0)), identityDetails);
 
         Date issuedAt = jwtService.extractClaim(token, Claims::getIssuedAt);
         Date expiration = jwtService.extractClaim(token, Claims::getExpiration);
         assertEquals(EMAIL, jwtService.extractEmail(token));
+        assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, Claims::getSubject));
         assertTrue(issuedAt.after(new Date(0)));
         assertEquals(300000L, expiration.getTime() - issuedAt.getTime());
         assertTrue(jwtService.isTokenValid(token));
@@ -140,13 +238,14 @@ class JwtServiceTest {
 
         assertEquals(EMAIL, jwtService.extractEmail(token));
         assertEquals(EMAIL, jwtService.extractUsername(token));
+        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
         assertEquals(CLIENT_ID, jwtService.extractClaim(token, claims -> claims.get("clientId", String.class)));
         assertNotNull(jwtService.extractClaim(token, Claims::getExpiration));
     }
 
     @Test
     void validatesTokenForMatchingUser() {
-        String token = jwtService.generateToken(userDetails);
+        String token = jwtService.generateToken(identityDetails);
 
         assertTrue(jwtService.isTokenValid(token));
         assertTrue(jwtService.isTokenValid(token, userDetails));
@@ -158,7 +257,8 @@ class JwtServiceTest {
         UserDetails otherUser = org.springframework.security.core.userdetails.User
                 .withUserDetails(userDetails).username("other@example.com").build();
 
-        assertFalse(jwtService.isTokenValid(jwtService.generateToken(userDetails), otherUser));
+        assertFalse(jwtService.isTokenValid(jwtService.generateToken(user), otherUser));
+        assertFalse(jwtService.isTokenValid(jwtService.generateToken(identityDetails), otherUser));
     }
 
     @Test
@@ -178,7 +278,7 @@ class JwtServiceTest {
 
     @Test
     void rejectsTamperedPayload() {
-        String[] parts = jwtService.generateToken(userDetails).split("\\.");
+        String[] parts = jwtService.generateToken(identityDetails).split("\\.");
         String payload = new String(Decoders.BASE64URL.decode(parts[1]), StandardCharsets.UTF_8)
                 .replace(EMAIL, "attacker@example.com");
         String tamperedToken = parts[0] + "."
@@ -192,7 +292,7 @@ class JwtServiceTest {
 
     @Test
     void rejectsTamperedSignature() {
-        String[] parts = jwtService.generateToken(userDetails).split("\\.");
+        String[] parts = jwtService.generateToken(identityDetails).split("\\.");
         parts[2] = (parts[2].charAt(0) == 'A' ? "B" : "A") + parts[2].substring(1);
         String tamperedToken = String.join(".", parts);
 
@@ -267,5 +367,105 @@ class JwtServiceTest {
         properties.setSecret(Encoders.BASE64.encode("too-short".getBytes(StandardCharsets.UTF_8)));
 
         assertThrows(WeakKeyException.class, () -> new JwtService(properties));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {32, 48, 64})
+    void alwaysSignsHs256RegardlessOfKeyLength(int keyLength) {
+        byte[] keyBytes = new byte[keyLength];
+        new SecureRandom().nextBytes(keyBytes);
+        properties.setSecret(Encoders.BASE64.encode(keyBytes));
+        JwtService service = new JwtService(properties);
+        var parser = Jwts.parser().verifyWith(Keys.hmacShaKeyFor(keyBytes)).build();
+
+        for (String token : new String[]{service.generateToken(user), service.generateToken(user, CLIENT_ID),
+                service.generateToken(identityDetails), service.generateToken(Map.of(), identityDetails),
+                service.generateToken(Map.of("userId", user.getUserId(), "fullName", user.getFullName()), userDetails)}) {
+            assertEquals("HS256", parser.parseSignedClaims(token).getHeader().getAlgorithm());
+            assertTrue(service.isTokenValid(token, userDetails));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {48, 64})
+    void rejectsOtherHmacAlgorithmsEvenWithTheCorrectKey(int keyLength) {
+        byte[] keyBytes = new byte[keyLength];
+        new SecureRandom().nextBytes(keyBytes);
+        properties.setSecret(Encoders.BASE64.encode(keyBytes));
+        JwtService service = new JwtService(properties);
+        String token = Jwts.builder().subject(user.getUserId().toString()).claim("email", EMAIL)
+                .expiration(Date.from(Instant.now().plusSeconds(60)))
+                .signWith(Keys.hmacShaKeyFor(keyBytes), keyLength == 48 ? Jwts.SIG.HS384 : Jwts.SIG.HS512)
+                .compact();
+
+        assertFalse(service.isTokenValid(token));
+        assertFalse(service.isTokenValid(token, userDetails));
+        assertThrows(JwtException.class, () -> service.extractEmail(token));
+    }
+
+    @Test
+    void readsLegacyEmailSubjectAndUserIdClaim() {
+        String token = Jwts.builder().subject(EMAIL).claim("userId", user.getUserId().toString())
+                .expiration(Date.from(Instant.now().plusSeconds(60)))
+                .signWith(signingKey, Jwts.SIG.HS256).compact();
+
+        assertEquals(EMAIL, jwtService.extractEmail(token));
+        assertEquals(EMAIL, jwtService.extractUsername(token));
+        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
+        assertTrue(jwtService.isTokenValid(token, userDetails));
+    }
+
+    @Test
+    void emailClaimTakesPrecedenceOverLegacySubject() {
+        String token = Jwts.builder().subject("old@example.com").claim("email", EMAIL)
+                .expiration(Date.from(Instant.now().plusSeconds(60)))
+                .signWith(signingKey, Jwts.SIG.HS256).compact();
+
+        assertEquals(EMAIL, jwtService.extractEmail(token));
+        assertTrue(jwtService.isTokenValid(token, userDetails));
+    }
+
+    @Test
+    void neverUsesUuidSubjectAsEmailAndPrefersItOverUserIdClaim() {
+        String token = Jwts.builder().subject(user.getUserId().toString()).claim("userId", "other-id")
+                .expiration(Date.from(Instant.now().plusSeconds(60)))
+                .signWith(signingKey, Jwts.SIG.HS256).compact();
+
+        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
+        assertNull(jwtService.extractEmail(token));
+        assertNull(jwtService.extractUsername(token));
+        assertFalse(jwtService.isTokenValid(token, userDetails));
+    }
+
+    @Test
+    void extractsUserIdClaimWhenSubjectIsAbsent() {
+        String token = Jwts.builder().claim("userId", user.getUserId().toString())
+                .signWith(signingKey, Jwts.SIG.HS256).compact();
+
+        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
+    }
+
+    private static class IdentityUserDetails extends User implements UserDetails {
+        IdentityUserDetails(User user) {
+            setUserId(user.getUserId());
+            setEmail(user.getEmail());
+            setFullName(user.getFullName());
+            setPasswordHash(user.getPasswordHash());
+        }
+
+        @Override
+        public Collection<? extends GrantedAuthority> getAuthorities() {
+            return List.of();
+        }
+
+        @Override
+        public String getPassword() {
+            return getPasswordHash();
+        }
+
+        @Override
+        public String getUsername() {
+            return getEmail();
+        }
     }
 }

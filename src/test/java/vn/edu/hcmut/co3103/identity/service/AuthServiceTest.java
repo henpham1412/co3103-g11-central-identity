@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
@@ -14,6 +15,7 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -36,6 +38,7 @@ import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 
 import java.time.Duration;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -56,6 +59,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -167,6 +171,68 @@ class AuthServiceTest {
         verifyNoInteractions(jwtService, jwtProperties);
     }
 
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = "23505")
+    void registerRecognizesEmailConstraintFromHibernateMetadata(String sqlState) {
+        when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
+        var sql = new SQLException("constraint violation", sqlState);
+        var violation = new ConstraintViolationException("insert failed", sql, "users_email_key");
+        when(userRepository.saveAndFlush(any(User.class)))
+                .thenThrow(new DataIntegrityViolationException("could not execute statement", violation));
+
+        var exception = assertThrows(DuplicateEmailException.class, () -> authService.register(registerRequest));
+
+        assertEquals("Email already exists: " + EMAIL, exception.getMessage());
+    }
+
+    @Test
+    void registerRecognizesEmailColumnInNestedSqlUniqueViolation() {
+        when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
+        var sql = new SQLException("duplicate key; Detail: Key (email)=(student@example.com) already exists", "23505");
+        var batch = new SQLException("batch failed");
+        batch.setNextException(sql);
+        when(userRepository.saveAndFlush(any(User.class)))
+                .thenThrow(new DataIntegrityViolationException("could not execute batch", batch));
+
+        assertThrows(DuplicateEmailException.class, () -> authService.register(registerRequest));
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            23514 | new row violates check constraint chk_users_status
+            23502 | null value in column email violates not-null constraint
+            22001 | value too long for type character varying(150)
+            22021 | invalid byte sequence for encoding UTF8: 0x00
+            23505 | duplicate key violates unique constraint users_pkey; insert into users (email)
+            23514 | check constraint rejected full_name value: duplicate key violates users_email_key
+            """)
+    void registerRethrowsNonEmailIntegrityViolations(String sqlState, String detail) {
+        when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
+        var failure = new DataIntegrityViolationException("insert failed", new SQLException(detail, sqlState));
+        when(userRepository.saveAndFlush(any(User.class))).thenThrow(failure);
+
+        assertSame(failure, assertThrows(DataIntegrityViolationException.class,
+                () -> authService.register(registerRequest)));
+        verifyNoInteractions(jwtService, jwtProperties);
+    }
+
+    @Test
+    void registerRethrowsUnclassifiedIntegrityViolationAndRollsBack() {
+        when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
+        var failure = new DataIntegrityViolationException("unknown integrity failure");
+        when(userRepository.saveAndFlush(any(User.class))).thenThrow(failure);
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        SimpleTransactionStatus transactionStatus = new SimpleTransactionStatus();
+        when(transactionManager.getTransaction(any(TransactionDefinition.class))).thenReturn(transactionStatus);
+
+        assertSame(failure, assertThrows(DataIntegrityViolationException.class,
+                () -> transactionalService(transactionManager).register(registerRequest)));
+
+        verify(transactionManager).rollback(transactionStatus);
+        verify(transactionManager, never()).commit(any());
+    }
+
     @Test
     void registerNormalizesEmailAndTrimsFullName() {
         // Bypass the DTO's own normalization to exercise the service boundary.
@@ -224,7 +290,7 @@ class AuthServiceTest {
         order.verify(userRepository).findByEmailForUpdate(EMAIL);
         order.verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
         order.verify(userRepository).save(user);
-        order.verify(jwtService).generateToken(user);
+        order.verify(jwtService).generateToken(user, null);
         verify(userRepository, never()).findByEmail(anyString());
     }
 
@@ -238,6 +304,19 @@ class AuthServiceTest {
         assertEquals(TOKEN, authService.login(request).getAccessToken());
 
         verify(userRepository).findByEmailForUpdate(EMAIL);
+    }
+
+    @Test
+    void loginPassesOptionalClientIdToTokenGeneration() {
+        loginRequest.setClientId("lms-client");
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
+        when(jwtService.generateToken(user, "lms-client")).thenReturn(TOKEN);
+        when(jwtProperties.getExpirationMs()).thenReturn(3_600_000L);
+
+        assertEquals(TOKEN, authService.login(loginRequest).getAccessToken());
+
+        verify(jwtService).generateToken(user, "lms-client");
     }
 
     @ParameterizedTest
@@ -297,7 +376,8 @@ class AuthServiceTest {
         assertEquals(lockedUntil, user.getLockedUntil());
         assertEquals(5, user.getFailedLoginAttempts());
         verify(userRepository, never()).save(any(User.class));
-        verifyNoInteractions(passwordEncoder, jwtService, jwtProperties);
+        verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
+        verifyNoInteractions(jwtService, jwtProperties);
     }
 
     @Test
@@ -347,24 +427,33 @@ class AuthServiceTest {
         verifyNoInteractions(jwtService, jwtProperties);
     }
 
-    @Test
-    void loginInactiveAccountThrowsAccountInactiveException() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void loginInactiveAccountChecksPasswordBeforeRejecting(boolean passwordMatches) {
+        user = spy(user);
         user.setStatus(UserStatus.INACTIVE);
         user.setLockedUntil(Instant.now().plusSeconds(60));
+        user.setFailedLoginAttempts(3);
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(passwordMatches);
 
         AccountInactiveException exception = assertThrows(AccountInactiveException.class,
                 () -> authService.login(loginRequest));
 
         assertEquals("Account is inactive", exception.getMessage());
+        var order = inOrder(passwordEncoder, user);
+        order.verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
+        order.verify(user).getStatus();
+        assertEquals(3, user.getFailedLoginAttempts());
         verify(userRepository, never()).save(any(User.class));
-        verifyNoInteractions(passwordEncoder, jwtService, jwtProperties);
+        verifyNoInteractions(jwtService, jwtProperties);
     }
 
     @ParameterizedTest
     @NullSource
     @EnumSource(value = UserStatus.class, names = {"SUSPENDED", "DEACTIVATED"})
     void loginOtherNonActiveStatusesThrowInvalidCredentialsException(UserStatus status) {
+        user = spy(user);
         user.setStatus(status);
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
 
@@ -372,8 +461,26 @@ class AuthServiceTest {
                 () -> authService.login(loginRequest));
 
         assertEquals("Invalid email or password", exception.getMessage());
+        var order = inOrder(passwordEncoder, user);
+        order.verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
+        order.verify(user, org.mockito.Mockito.times(2)).getStatus();
+        assertEquals(0, user.getFailedLoginAttempts());
         verify(userRepository, never()).save(any(User.class));
-        verifyNoInteractions(passwordEncoder, jwtService, jwtProperties);
+        verifyNoInteractions(jwtService, jwtProperties);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = UserStatus.class, names = {"SUSPENDED", "DEACTIVATED"})
+    void loginNonActiveAccountRejectsEvenCorrectPassword(UserStatus status) {
+        user.setStatus(status);
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
+
+        assertThrows(InvalidCredentialsException.class, () -> authService.login(loginRequest));
+
+        verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
+        verify(userRepository, never()).save(any(User.class));
+        verifyNoInteractions(jwtService, jwtProperties);
     }
 
     @ParameterizedTest
@@ -426,7 +533,7 @@ class AuthServiceTest {
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
         IllegalStateException failure = new IllegalStateException("Token signing failed");
-        when(jwtService.generateToken(user)).thenThrow(failure);
+        when(jwtService.generateToken(user, null)).thenThrow(failure);
         PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
         SimpleTransactionStatus transactionStatus = new SimpleTransactionStatus();
         when(transactionManager.getTransaction(any(TransactionDefinition.class))).thenReturn(transactionStatus);
@@ -447,7 +554,7 @@ class AuthServiceTest {
     private void stubSuccessfulLogin() {
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
-        when(jwtService.generateToken(user)).thenReturn(TOKEN);
+        when(jwtService.generateToken(user, null)).thenReturn(TOKEN);
         when(jwtProperties.getExpirationMs()).thenReturn(3_600_999L);
     }
 

@@ -1,5 +1,7 @@
 package vn.edu.hcmut.co3103.identity.config;
 
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -7,6 +9,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
@@ -19,15 +23,19 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.DefaultCorsProcessor;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.filter.CorsFilter;
 import vn.edu.hcmut.co3103.identity.entity.UserStatus;
+import vn.edu.hcmut.co3103.identity.exception.ApiErrorResponse;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtAuthenticationFilter;
+import tools.jackson.databind.ObjectMapper;
 
+import java.io.IOException;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
@@ -47,10 +55,12 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    JwtAuthenticationFilter jwtAuthenticationFilter,
-                                                   AuthenticationProvider authenticationProvider) throws Exception {
+                                                   AuthenticationProvider authenticationProvider,
+                                                   ObjectMapper objectMapper) throws Exception {
         return http
                 .csrf(csrf -> csrf.disable())
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .cors(cors -> cors.disable())
+                .addFilterAt(jsonCorsFilter(objectMapper), CorsFilter.class)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/login").permitAll()
@@ -58,10 +68,48 @@ public class SecurityConfig {
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions
-                        .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
+                        .authenticationEntryPoint((request, response, exception) -> writeSecurityError(
+                                objectMapper, request, response, HttpStatus.UNAUTHORIZED,
+                                "Full authentication is required to access this resource"))
+                        .accessDeniedHandler((request, response, exception) -> writeSecurityError(
+                                objectMapper, request, response, HttpStatus.FORBIDDEN,
+                                "Access is denied")))
                 .authenticationProvider(authenticationProvider)
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
+    }
+
+    private CorsFilter jsonCorsFilter(ObjectMapper objectMapper) {
+        CorsFilter filter = new CorsFilter(corsConfigurationSource());
+        filter.setCorsProcessor(new DefaultCorsProcessor() {
+            @Override
+            protected void rejectRequest(ServerHttpResponse response) {
+                // Leave the body uncommitted so processRequest can include the request path in JSON.
+                response.setStatusCode(HttpStatus.FORBIDDEN);
+            }
+
+            @Override
+            public boolean processRequest(CorsConfiguration configuration, HttpServletRequest request,
+                                          HttpServletResponse response) throws IOException {
+                boolean allowed = super.processRequest(configuration, request, response);
+                if (!allowed) {
+                    writeSecurityError(objectMapper, request, response, HttpStatus.FORBIDDEN,
+                            "Invalid CORS request");
+                }
+                return allowed;
+            }
+        });
+        return filter;
+    }
+
+    private static void writeSecurityError(ObjectMapper objectMapper, HttpServletRequest request,
+                                           HttpServletResponse response, HttpStatus status,
+                                           String message) throws IOException {
+        response.setStatus(status.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()
+                .status(status.value()).error(status.getReasonPhrase()).message(message)
+                .path(request.getRequestURI()).build());
     }
 
     @Bean

@@ -16,6 +16,7 @@ import vn.edu.hcmut.co3103.identity.entity.UserStatus;
 import vn.edu.hcmut.co3103.identity.exception.AccountInactiveException;
 import vn.edu.hcmut.co3103.identity.exception.AccountLockedException;
 import vn.edu.hcmut.co3103.identity.exception.DuplicateEmailException;
+import vn.edu.hcmut.co3103.identity.exception.DataIntegrityViolationClassifier;
 import vn.edu.hcmut.co3103.identity.exception.InvalidCredentialsException;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
@@ -56,7 +57,10 @@ public class AuthService {
         try {
             savedUser = userRepository.saveAndFlush(user);
         } catch (DataIntegrityViolationException e) {
-            throw new DuplicateEmailException("Email already exists: " + email);
+            if (DataIntegrityViolationClassifier.isEmailUniqueViolation(e)) {
+                throw new DuplicateEmailException("Email already exists: " + email);
+            }
+            throw e;
         }
 
         return RegisterResponse.builder()
@@ -79,6 +83,8 @@ public class AuthService {
                     return new InvalidCredentialsException("Invalid email or password");
                 });
 
+        // Every found account pays the password-hash cost before status or lockout checks.
+        boolean passwordMatches = passwordEncoder.matches(request.getPassword(), user.getPasswordHash());
         if (user.getStatus() == UserStatus.INACTIVE) {
             throw new AccountInactiveException("Account is inactive");
         }
@@ -96,7 +102,7 @@ public class AuthService {
             user.setFailedLoginAttempts(0);
         }
 
-        if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
+        if (!passwordMatches) {
             int attempts = (user.getFailedLoginAttempts() == null ? 0 : user.getFailedLoginAttempts()) + 1;
             user.setFailedLoginAttempts(attempts);
             if (attempts >= 5) {
@@ -114,7 +120,7 @@ public class AuthService {
         user.setLockedUntil(null);
         user.setLastLoginAt(Instant.now());
         userRepository.save(user);
-        String token = jwtService.generateToken(user);
+        String token = jwtService.generateToken(user, request.getClientId());
         long expiresInSeconds = jwtProperties.getExpirationMs() / 1000;
         return AuthResponse.builder()
                 .accessToken(token)

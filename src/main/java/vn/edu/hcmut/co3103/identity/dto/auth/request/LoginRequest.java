@@ -1,9 +1,9 @@
 package vn.edu.hcmut.co3103.identity.dto.auth.request;
 
+import com.fasterxml.jackson.annotation.JsonSetter;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
-import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -15,7 +15,6 @@ import java.util.Locale;
 @Setter
 @Builder
 @NoArgsConstructor
-@AllArgsConstructor
 public class LoginRequest {
 
     @NotBlank(message = "Email is required")
@@ -28,10 +27,18 @@ public class LoginRequest {
 
     private String clientId;
 
+    // Keep normalization identical for constructor- and setter-based JSON binding.
+    public LoginRequest(String email, String password, String clientId) {
+        this.email = normalizeEmail(email);
+        this.password = password;
+        this.clientId = clientId;
+    }
+
     private static String normalizeEmail(String email) {
         return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
     }
 
+    @JsonSetter("email")
     public void setEmail(String email) {
         this.email = normalizeEmail(email);
     }

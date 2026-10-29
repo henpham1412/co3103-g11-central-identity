@@ -5,6 +5,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
@@ -23,6 +24,7 @@ import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.response.AuthResponse;
 import vn.edu.hcmut.co3103.identity.dto.auth.response.RegisterResponse;
 import vn.edu.hcmut.co3103.identity.entity.UserStatus;
+import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.exception.AccountInactiveException;
 import vn.edu.hcmut.co3103.identity.exception.AccountLockedException;
 import vn.edu.hcmut.co3103.identity.exception.DuplicateEmailException;
@@ -33,7 +35,10 @@ import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 import vn.edu.hcmut.co3103.identity.service.AuthService;
 
 import java.time.Instant;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.aMapWithSize;
@@ -111,6 +116,76 @@ class AuthControllerTest {
         verify(authService).register(argThat(request -> EMAIL.equals(request.getEmail())
                 && PASSWORD.equals(request.getPassword()) && FULL_NAME.equals(request.getFullName())
                 && "lms-client".equals(request.getClientId())));
+    }
+
+    @Test
+    void registerAndLoginNormalizeWhitespaceAndUppercaseBeforeValidation() throws Exception {
+        String rawEmail = "   STUDENT.WHITESPACE@EXAMPLE.COM   ";
+        String normalizedEmail = "student.whitespace@example.com";
+        AuthService realService = new AuthService(userRepository, passwordEncoder, jwtService, jwtProperties);
+        AtomicReference<User> savedUser = new AtomicReference<>();
+        when(userRepository.saveAndFlush(any(User.class))).thenAnswer(invocation -> {
+            User saved = invocation.getArgument(0);
+            saved.setUserId(USER_ID);
+            saved.setCreatedAt(Instant.now());
+            savedUser.set(saved);
+            return saved;
+        });
+        when(userRepository.findByEmailForUpdate(normalizedEmail))
+                .thenAnswer(invocation -> Optional.ofNullable(savedUser.get()));
+        when(authService.register(any(RegisterRequest.class)))
+                .thenAnswer(invocation -> realService.register(invocation.getArgument(0)));
+        when(authService.login(any(LoginRequest.class)))
+                .thenAnswer(invocation -> realService.login(invocation.getArgument(0)));
+
+        mockMvc.perform(post(REGISTER_PATH).contentType(MediaType.APPLICATION_JSON)
+                        .content(REGISTER_JSON.replace(EMAIL, rawEmail)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.email").value(normalizedEmail));
+        mockMvc.perform(post(LOGIN_PATH).contentType(MediaType.APPLICATION_JSON)
+                        .content(LOGIN_JSON.replace(EMAIL, rawEmail)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email").value(normalizedEmail))
+                .andExpect(jsonPath("$.accessToken").isNotEmpty())
+                .andExpect(result -> {
+                    String token = com.jayway.jsonpath.JsonPath.read(
+                            result.getResponse().getContentAsString(), "$.accessToken");
+                    assertThat(jwtService.extractUserId(token)).isEqualTo(USER_ID.toString());
+                    String clientId = jwtService.extractClaim(token, claims -> claims.get("clientId", String.class));
+                    assertThat(clientId).isEqualTo("lms-client");
+                });
+        verify(authService).register(argThat(request -> normalizedEmail.equals(request.getEmail())));
+        verify(authService).login(argThat(request -> normalizedEmail.equals(request.getEmail())));
+        verify(userRepository).existsByEmail(normalizedEmail);
+        verify(userRepository).findByEmailForUpdate(normalizedEmail);
+    }
+
+    @ParameterizedTest
+    @MethodSource("controlCharacters")
+    void registerRejectsNullAndControlCharactersInFullName(int codePoint) throws Exception {
+        String escapedControl = String.format("\\u%04x", codePoint);
+        String requestBody = REGISTER_JSON.replace(FULL_NAME, "Test" + escapedControl + " Student");
+
+        expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
+                .andExpect(jsonPath("$.validationErrors.fullName").value("Full name contains invalid characters"));
+        verifyNoInteractions(authService, userRepository);
+    }
+
+    static IntStream controlCharacters() {
+        return IntStream.concat(IntStream.rangeClosed(0, 31), IntStream.rangeClosed(127, 159));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Nguyễn Thị Ánh", "李明", "Jose\u0301 Silva"})
+    void registerAcceptsUnicodeNamesWithoutControlCharacters(String fullName) throws Exception {
+        when(authService.register(any(RegisterRequest.class))).thenReturn(RegisterResponse.builder()
+                .userId(USER_ID).email(EMAIL).fullName(fullName).status(UserStatus.ACTIVE).build());
+
+        mockMvc.perform(post(REGISTER_PATH).contentType(MediaType.APPLICATION_JSON)
+                        .content(REGISTER_JSON.replace(FULL_NAME, fullName)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.fullName").value(fullName));
+        verify(authService).register(argThat(request -> fullName.equals(request.getFullName())));
     }
 
     @ParameterizedTest

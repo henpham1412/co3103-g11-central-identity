@@ -4,10 +4,17 @@ import jakarta.validation.Valid;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -19,16 +26,27 @@ import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.response.AuthResponse;
 import vn.edu.hcmut.co3103.identity.dto.auth.response.RegisterResponse;
 import vn.edu.hcmut.co3103.identity.service.AuthService;
+import vn.edu.hcmut.co3103.identity.config.JwtProperties;
+import vn.edu.hcmut.co3103.identity.entity.User;
+import vn.edu.hcmut.co3103.identity.repository.UserRepository;
+import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 
 import java.time.Instant;
+import java.sql.SQLException;
+import java.util.stream.Stream;
 
 import static org.hamcrest.Matchers.aMapWithSize;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @ExtendWith(MockitoExtension.class)
@@ -73,6 +91,128 @@ class GlobalExceptionHandlerTest {
         expectError(REGISTER_PATH, REGISTER_JSON, 409, "Conflict", "Data conflicts with an existing record")
                 .andExpect(jsonPath("$.lockedUntil").doesNotExist())
                 .andExpect(jsonPath("$.validationErrors").doesNotExist());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"23505, 500, Internal Server Error", "23514, 400, Bad Request", "23502, 400, Bad Request",
+            "23503, 400, Bad Request", "22001, 400, Bad Request", "22021, 400, Bad Request",
+            "XX000, 500, Internal Server Error"})
+    void classifiesSqlIntegrityFailuresWithoutExposingDatabaseDetails(String sqlState, int status, String error)
+            throws Exception {
+        when(authService.register(any(RegisterRequest.class))).thenThrow(new DataIntegrityViolationException(
+                "Sensitive SQL parameters", new SQLException("Sensitive database details", sqlState)));
+
+        expectError(REGISTER_PATH, REGISTER_JSON, status, error, status == 500
+                ? "An unexpected internal error occurred" : "Request violates a data constraint")
+                .andExpect(content().string(not(containsString("Sensitive"))));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"users_email_key, 23505, 409, Conflict",
+            "users_pkey, 23505, 500, Internal Server Error",
+            "users_external_id_key, 23505, 500, Internal Server Error",
+            "users_status_check, 23514, 400, Bad Request",
+            "users_full_name_not_null, 23502, 400, Bad Request",
+            "users_full_name, 22001, 400, Bad Request",
+            "users_full_name, 22021, 400, Bad Request",
+            "unknown, XX000, 500, Internal Server Error"})
+    void classifiesRepositoryFailuresThroughRealServiceAndAdvice(
+            String constraint, String sqlState, int status, String error) throws Exception {
+        UserRepository repository = mock(UserRepository.class);
+        AuthService service = new AuthService(repository, mock(PasswordEncoder.class),
+                mock(JwtService.class), new JwtProperties());
+        when(repository.saveAndFlush(any(User.class))).thenThrow(new DataIntegrityViolationException(
+                "Sensitive SQL parameters", new org.hibernate.exception.ConstraintViolationException(
+                "Sensitive database details", new SQLException("Sensitive database details", sqlState), constraint)));
+        mockMvc = MockMvcBuilders.standaloneSetup(new TestAuthController(service))
+                .setControllerAdvice(new GlobalExceptionHandler()).build();
+
+        String message = switch (status) {
+            case 409 -> "Email already exists: student@example.com";
+            case 400 -> "Request violates a data constraint";
+            default -> "An unexpected internal error occurred";
+        };
+        expectError(REGISTER_PATH, REGISTER_JSON, status, error, message)
+                .andExpect(content().string(not(containsString("Sensitive"))));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
+    void unsupportedMethodReturnsJson405AndAllowHeader(String path) throws Exception {
+        mockMvc.perform(get(path).accept(MediaType.APPLICATION_XML))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().string("Allow", containsString("POST")))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(405))
+                .andExpect(jsonPath("$.error").value("Method Not Allowed"))
+                .andExpect(jsonPath("$.message").value("Request method is not supported"))
+                .andExpect(jsonPath("$.path").value(path))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+        verifyNoInteractions(authService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
+    void unsupportedRequestMediaTypeReturnsJson415(String path) throws Exception {
+        mockMvc.perform(post(path).contentType(MediaType.APPLICATION_XML)
+                        .accept(MediaType.APPLICATION_XML).content("<request/>"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(415))
+                .andExpect(jsonPath("$.error").value("Unsupported Media Type"))
+                .andExpect(jsonPath("$.message").value("Request media type is not supported"))
+                .andExpect(jsonPath("$.path").value(path))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+        verifyNoInteractions(authService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"application/xml", "text/plain", "image/png"})
+    void unsupportedResponseMediaTypeReturnsJson406(String accept) throws Exception {
+        when(authService.register(any(RegisterRequest.class)))
+                .thenReturn(RegisterResponse.builder().email("student@example.com").build());
+
+        expectError(REGISTER_PATH, REGISTER_JSON, 406, "Not Acceptable",
+                "Requested response media type is not supported", accept);
+    }
+
+    @ParameterizedTest
+    @MethodSource("handledFailures")
+    void handledExceptionsRemainJsonForUnsupportedAcceptHeaders(RuntimeException failure,
+                                                               int status, String error, String message)
+            throws Exception {
+        when(authService.register(any(RegisterRequest.class))).thenThrow(failure);
+
+        for (String accept : new String[]{"application/xml", "text/plain", "image/png"}) {
+            expectError(REGISTER_PATH, REGISTER_JSON, status, error, message, accept)
+                    .andExpect(content().string(not(containsString("Sensitive"))));
+        }
+    }
+
+    static Stream<Arguments> handledFailures() {
+        return Stream.of(
+                Arguments.of(new DuplicateEmailException("Email already exists"), 409, "Conflict", "Email already exists"),
+                Arguments.of(new InvalidCredentialsException("Invalid email or password"),
+                        401, "Unauthorized", "Invalid email or password"),
+                Arguments.of(new AccountInactiveException("Account is inactive"), 403, "Forbidden", "Account is inactive"),
+                Arguments.of(new AccessDeniedException("Sensitive authorization details"),
+                        403, "Forbidden", "Access is denied"),
+                Arguments.of(new AccountLockedException("Account is locked", Instant.now()), 423, "Locked", "Account is locked"),
+                Arguments.of(new DataIntegrityViolationException("Sensitive constraint details"),
+                        500, "Internal Server Error", "An unexpected internal error occurred"),
+                Arguments.of(new IllegalArgumentException("Sensitive arguments"),
+                        400, "Bad Request", "Invalid request argument"),
+                Arguments.of(new IllegalStateException("Sensitive connection details"),
+                        500, "Internal Server Error", "An unexpected internal error occurred"));
+    }
+
+    @Test
+    void validationAndMalformedJsonErrorsIgnoreUnsupportedAcceptHeader() throws Exception {
+        expectError(REGISTER_PATH, "{}", 400, "Bad Request", "Validation failed", "application/xml")
+                .andExpect(jsonPath("$.validationErrors", aMapWithSize(3)));
+        expectError(REGISTER_PATH, "{", 400, "Bad Request",
+                "Required request body is missing or malformed", "application/xml");
+        verifyNoInteractions(authService);
     }
 
     @Test
@@ -140,7 +280,12 @@ class GlobalExceptionHandlerTest {
 
     private ResultActions expectError(String path, String requestBody, int statusCode,
                                       String error, String message) throws Exception {
-        return mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(requestBody))
+        return expectError(path, requestBody, statusCode, error, message, MediaType.APPLICATION_JSON_VALUE);
+    }
+
+    private ResultActions expectError(String path, String requestBody, int statusCode,
+                                      String error, String message, String accept) throws Exception {
+        return mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).accept(accept).content(requestBody))
                 .andExpect(status().is(statusCode))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value(statusCode))

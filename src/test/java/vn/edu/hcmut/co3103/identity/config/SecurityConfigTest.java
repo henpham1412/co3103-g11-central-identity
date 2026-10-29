@@ -10,12 +10,18 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.DisabledException;
@@ -29,20 +35,26 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.junit.jupiter.web.SpringJUnitWebConfig;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.entity.UserStatus;
+import vn.edu.hcmut.co3103.identity.exception.GlobalExceptionHandler;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtAuthenticationFilter;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
 import java.util.Date;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -58,6 +70,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringJUnitWebConfig(SecurityConfigTest.TestConfig.class)
@@ -189,14 +202,34 @@ class SecurityConfigTest {
 
     @ParameterizedTest
     @CsvSource({
-            "http://untrusted.example, POST",
+            "https://untrusted.example, POST",
             "http://localhost:3000, PATCH"
     })
     void rejectsCorsPreflightForDisallowedOriginsOrMethods(String origin, String method) throws Exception {
         mockMvc.perform(options("/api/v1/users/me")
+                        .accept(MediaType.APPLICATION_XML)
                         .header(HttpHeaders.ORIGIN, origin)
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, method))
                 .andExpect(status().isForbidden())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.error").value("Forbidden"))
+                .andExpect(jsonPath("$.message").value("Invalid CORS request"))
+                .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty())
+                .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+    }
+
+    @Test
+    void rejectsUntrustedOriginOnPublicPostWithJson() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/login").header(HttpHeaders.ORIGIN, "https://untrusted.example"))
+                .andExpect(status().isForbidden())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.error").value("Forbidden"))
+                .andExpect(jsonPath("$.message").value("Invalid CORS request"))
+                .andExpect(jsonPath("$.path").value("/api/v1/auth/login"))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
     }
 
@@ -227,7 +260,52 @@ class SecurityConfigTest {
         if (authorization != null) {
             request.header(HttpHeaders.AUTHORIZATION, authorization);
         }
-        mockMvc.perform(request).andExpect(status().isUnauthorized());
+        mockMvc.perform(request.accept(MediaType.APPLICATION_XML))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.error").value("Unauthorized"))
+                .andExpect(jsonPath("$.message").value("Full authentication is required to access this resource"))
+                .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+    }
+
+    @Test
+    void accessDeniedReturnsJsonForbiddenEvenWhenClientAcceptsXml() throws Exception {
+        mockMvc.perform(get("/api/v1/admin").accept(MediaType.APPLICATION_XML)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
+                .andExpect(status().isForbidden())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.error").value("Forbidden"))
+                .andExpect(jsonPath("$.message").value("Access is denied"))
+                .andExpect(jsonPath("$.path").value("/api/v1/admin"))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+    }
+
+    @ParameterizedTest
+    @MethodSource("lookupFailures")
+    void lookupFailureReturnsJsonServerErrorInsteadOfUnauthorized(RuntimeException failure) throws Exception {
+        when(userRepository.findByEmail(EMAIL)).thenThrow(failure);
+
+        mockMvc.perform(get("/api/v1/users/me").accept(MediaType.APPLICATION_XML)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
+                .andExpect(status().isInternalServerError())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.error").value("Internal Server Error"))
+                .andExpect(jsonPath("$.message").value("An unexpected internal error occurred"))
+                .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty())
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("Sensitive database"))));
+    }
+
+    static Stream<RuntimeException> lookupFailures() {
+        return Stream.of(
+                new DataAccessResourceFailureException("Sensitive database connection details"),
+                new CannotCreateTransactionException("Sensitive database transaction details"),
+                new IllegalArgumentException("Sensitive database lookup details"));
     }
 
     @Test
@@ -327,12 +405,24 @@ class SecurityConfigTest {
 
     @Configuration
     @EnableWebMvc
-    @Import({SecurityConfig.class, JwtService.class, JwtAuthenticationFilter.class, ProbeController.class})
+    @EnableMethodSecurity
+    @Import({SecurityConfig.class, JwtService.class, JwtAuthenticationFilter.class,
+            GlobalExceptionHandler.class, ProbeController.class})
     static class TestConfig {
+        @Bean
+        ObjectMapper objectMapper() {
+            return JsonMapper.builder().build();
+        }
     }
 
     @RestController
     static class ProbeController {
+        @GetMapping("/api/v1/admin")
+        @PreAuthorize("hasRole('ADMIN')")
+        public String admin() {
+            return "admin";
+        }
+
         @RequestMapping("/**")
         String probe(Authentication authentication) {
             return authentication == null ? "public" : authentication.getName();
