@@ -8,6 +8,7 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLength;
 
 import java.util.Locale;
 
@@ -23,6 +24,7 @@ public class LoginRequest {
     private String email;
 
     @NotBlank(message = "Password is required")
+    @Utf8ByteLength(max = 72, message = "Password must not exceed 72 bytes")
     private String password;
 
     private String clientId;

@@ -294,6 +294,19 @@ class AuthServiceTest {
         verify(userRepository, never()).findByEmail(anyString());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"a", "\u00e9", "\u20ac", "\uD83D\uDE00"})
+    void loginRejectsMoreThan72Utf8BytesBeforeRepositoryOrBcrypt(String character) {
+        int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        loginRequest.setPassword(character.repeat(72 / bytesPerCharacter) + "b");
+
+        InvalidCredentialsException exception = assertThrows(InvalidCredentialsException.class,
+                () -> authService.login(loginRequest));
+
+        assertEquals("Invalid email or password", exception.getMessage());
+        verifyNoInteractions(userRepository, passwordEncoder, jwtService, jwtProperties);
+    }
+
     @Test
     void loginNormalizesEmail() {
         LoginRequest request = mock(LoginRequest.class);
@@ -344,15 +357,13 @@ class AuthServiceTest {
         stubFailedLogin();
         Instant before = Instant.now();
 
-        AccountLockedException exception = assertThrows(AccountLockedException.class,
+        InvalidCredentialsException exception = assertThrows(InvalidCredentialsException.class,
                 () -> authService.login(loginRequest));
         Instant after = Instant.now();
 
         assertAll(
                 () -> assertEquals(5, user.getFailedLoginAttempts()),
-                () -> assertEquals(user.getLockedUntil(), exception.getLockedUntil()),
-                () -> assertEquals("Account is locked due to 5 consecutive failed login attempts",
-                        exception.getMessage()),
+                () -> assertEquals("Invalid email or password", exception.getMessage()),
                 () -> assertFalse(user.getLockedUntil().isBefore(before.plus(Duration.ofMinutes(15)))),
                 () -> assertFalse(user.getLockedUntil().isAfter(after.plus(Duration.ofMinutes(15)))),
                 () -> assertNull(user.getLastLoginAt())
@@ -361,12 +372,15 @@ class AuthServiceTest {
         verifyNoInteractions(jwtService, jwtProperties);
     }
 
-    @Test
-    void loginWhileLockedThrowsAccountLockedException() {
+    @ParameterizedTest
+    @EnumSource(UserStatus.class)
+    void loginWhileLockedWithCorrectPasswordThrowsAccountLockedBeforeCheckingStatus(UserStatus status) {
         Instant lockedUntil = Instant.now().plus(Duration.ofMinutes(10));
+        user.setStatus(status);
         user.setFailedLoginAttempts(5);
         user.setLockedUntil(lockedUntil);
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
 
         AccountLockedException exception = assertThrows(AccountLockedException.class,
                 () -> authService.login(loginRequest));
@@ -377,6 +391,26 @@ class AuthServiceTest {
         assertEquals(5, user.getFailedLoginAttempts());
         verify(userRepository, never()).save(any(User.class));
         verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
+        verifyNoInteractions(jwtService, jwtProperties);
+    }
+
+    @ParameterizedTest
+    @EnumSource(UserStatus.class)
+    void loginWhileLockedWithWrongPasswordReturnsUnauthorizedAndDoesNotExtendLock(UserStatus status) {
+        Instant lockedUntil = Instant.now().plus(Duration.ofMinutes(10));
+        user.setStatus(status);
+        user.setFailedLoginAttempts(5);
+        user.setLockedUntil(lockedUntil);
+        stubFailedLogin();
+
+        InvalidCredentialsException exception = assertThrows(InvalidCredentialsException.class,
+                () -> authService.login(loginRequest));
+
+        assertEquals("Invalid email or password", exception.getMessage());
+        assertEquals(6, user.getFailedLoginAttempts());
+        assertEquals(lockedUntil, user.getLockedUntil());
+        assertNull(user.getLastLoginAt());
+        verify(userRepository).save(user);
         verifyNoInteractions(jwtService, jwtProperties);
     }
 
@@ -428,14 +462,14 @@ class AuthServiceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void loginInactiveAccountChecksPasswordBeforeRejecting(boolean passwordMatches) {
+    @NullSource
+    @EnumSource(value = UserStatus.class, names = {"INACTIVE", "SUSPENDED", "DEACTIVATED"})
+    void loginNonActiveAccountWithCorrectPasswordReturnsForbidden(UserStatus status) {
         user = spy(user);
-        user.setStatus(UserStatus.INACTIVE);
-        user.setLockedUntil(Instant.now().plusSeconds(60));
+        user.setStatus(status);
         user.setFailedLoginAttempts(3);
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
-        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(passwordMatches);
+        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
 
         AccountInactiveException exception = assertThrows(AccountInactiveException.class,
                 () -> authService.login(loginRequest));
@@ -451,35 +485,20 @@ class AuthServiceTest {
 
     @ParameterizedTest
     @NullSource
-    @EnumSource(value = UserStatus.class, names = {"SUSPENDED", "DEACTIVATED"})
-    void loginOtherNonActiveStatusesThrowInvalidCredentialsException(UserStatus status) {
+    @EnumSource(UserStatus.class)
+    void loginWrongPasswordNeverDisclosesAccountStatus(UserStatus status) {
         user = spy(user);
         user.setStatus(status);
-        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        stubFailedLogin();
 
         InvalidCredentialsException exception = assertThrows(InvalidCredentialsException.class,
                 () -> authService.login(loginRequest));
 
         assertEquals("Invalid email or password", exception.getMessage());
-        var order = inOrder(passwordEncoder, user);
-        order.verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
-        order.verify(user, org.mockito.Mockito.times(2)).getStatus();
-        assertEquals(0, user.getFailedLoginAttempts());
-        verify(userRepository, never()).save(any(User.class));
-        verifyNoInteractions(jwtService, jwtProperties);
-    }
-
-    @ParameterizedTest
-    @EnumSource(value = UserStatus.class, names = {"SUSPENDED", "DEACTIVATED"})
-    void loginNonActiveAccountRejectsEvenCorrectPassword(UserStatus status) {
-        user.setStatus(status);
-        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
-        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
-
-        assertThrows(InvalidCredentialsException.class, () -> authService.login(loginRequest));
-
         verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
-        verify(userRepository, never()).save(any(User.class));
+        verify(user, never()).getStatus();
+        assertEquals(1, user.getFailedLoginAttempts());
+        verify(userRepository).save(user);
         verifyNoInteractions(jwtService, jwtProperties);
     }
 
@@ -516,9 +535,7 @@ class AuthServiceTest {
         when(transactionManager.getTransaction(any(TransactionDefinition.class))).thenReturn(transactionStatus);
         AuthService transactionalService = transactionalService(transactionManager);
 
-        Class<? extends RuntimeException> expectedException = previousAttempts == 4
-                ? AccountLockedException.class : InvalidCredentialsException.class;
-        assertThrows(expectedException, () -> transactionalService.login(loginRequest));
+        assertThrows(InvalidCredentialsException.class, () -> transactionalService.login(loginRequest));
 
         verify(transactionManager).getTransaction(argThat(definition -> !definition.isReadOnly()));
         var order = inOrder(userRepository, transactionManager);

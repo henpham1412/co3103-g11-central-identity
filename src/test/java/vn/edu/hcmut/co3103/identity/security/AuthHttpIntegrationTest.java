@@ -4,6 +4,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.NullSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -13,6 +15,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import vn.edu.hcmut.co3103.identity.entity.User;
+import vn.edu.hcmut.co3103.identity.entity.UserStatus;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 
@@ -62,12 +65,16 @@ class AuthHttpIntegrationTest {
         client.close();
     }
 
-    @Test
-    void unacceptableRegistrationDoesNotCommitUserAndJsonRetrySucceeds() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"application/xml", "application/json;q=0", "application/xml;q=1, */*;q=0",
+            "application/json;q=0, */*;q=1", "*/*;q=1, application/json;q=0",
+            "application/*;q=0, */*;q=1", "application/json;q=0, application/*;q=1"})
+    void unacceptableRegistrationDoesNotCommitUserAndJsonRetrySucceeds(String accept) throws Exception {
         String email = newEmail();
         String body = registerBody(email, PASSWORD);
 
-        assertError(send("POST", REGISTER_PATH, body, "application/xml", null), 406, REGISTER_PATH);
+        JsonNode error = assertError(send("POST", REGISTER_PATH, body, accept, null), 406, REGISTER_PATH);
+        assertThat(error.get("code").asText()).isEqualTo("NOT_ACCEPTABLE");
         assertThat(countUsers(email)).isZero();
 
         HttpResponse<String> retry = send("POST", REGISTER_PATH, body, "application/json", null);
@@ -77,17 +84,90 @@ class AuthHttpIntegrationTest {
                 .isEqualTo(userRepository.findByEmail(email).orElseThrow().getUserId().toString());
     }
 
-    @Test
-    void unacceptableLoginDoesNotCommitFailedAttemptOrLoginTime() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"application/xml", "application/json;q=0", "application/xml;q=1, */*;q=0",
+            "application/json;q=0, */*;q=1", "*/*;q=1, application/json;q=0",
+            "application/*;q=0, */*;q=1"})
+    void unacceptableLoginDoesNotCommitFailedAttemptOrLoginTime(String accept) throws Exception {
         User user = createUser();
-        String body = "{\"email\":\"%s\",\"password\":\"wrong-password\"}".formatted(user.getEmail());
-
-        assertError(send("POST", LOGIN_PATH, body, "application/xml", null), 406, LOGIN_PATH);
+        for (String password : new String[]{"wrong-password", PASSWORD}) {
+            JsonNode error = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), password),
+                    accept, null), 406, LOGIN_PATH);
+            assertThat(error.get("code").asText()).isEqualTo("NOT_ACCEPTABLE");
+        }
 
         User persisted = userRepository.findById(user.getUserId()).orElseThrow();
         assertThat(persisted.getFailedLoginAttempts()).isZero();
         assertThat(persisted.getLockedUntil()).isNull();
         assertThat(persisted.getLastLoginAt()).isNull();
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {"*/*", "application/json", "application/json, text/plain, */*",
+            "application/json;q=0.1, */*;q=0", "*/*;q=0, application/json;q=0.1",
+            "application/*;q=0.5", "application/xml;q=1, */*;q=0.1",
+            "application/json;q=0.1, application/*;q=0"})
+    void acceptableJsonRegistrationAndLoginSucceed(String accept) throws Exception {
+        String email = newEmail();
+        assertThat(send("POST", REGISTER_PATH, registerBody(email, PASSWORD), accept, null).statusCode())
+                .isEqualTo(201);
+        assertThat(countUsers(email)).isEqualTo(1);
+        HttpResponse<String> login = send("POST", LOGIN_PATH, loginBody(email, PASSWORD), accept, null);
+        assertThat(login.statusCode()).as(login.body()).isEqualTo(200);
+        String token = objectMapper.readTree(login.body()).get("accessToken").asText();
+        assertThat(jwtService.isTokenValid(token,
+                new IdentityUserDetails(userRepository.findByEmail(email).orElseThrow()))).isTrue();
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = UserStatus.class, names = {"INACTIVE", "SUSPENDED", "DEACTIVATED"})
+    void nonActiveAccountDisclosesStatusOnlyAfterCorrectPassword(UserStatus status) throws Exception {
+        User user = createUser();
+        user.setStatus(status);
+        userRepository.saveAndFlush(user);
+
+        JsonNode unknown = assertError(send("POST", LOGIN_PATH, loginBody(newEmail(), "wrong-password"),
+                "application/json", null), 401, LOGIN_PATH);
+        JsonNode wrong = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), "wrong-password"),
+                "application/json", null), 401, LOGIN_PATH);
+        assertThat(wrong.get("message").asText()).isEqualTo("Invalid email or password");
+        // Only the timestamp varies between an unknown email and an existing account's wrong password.
+        ((tools.jackson.databind.node.ObjectNode) unknown).remove("timestamp");
+        ((tools.jackson.databind.node.ObjectNode) wrong).remove("timestamp");
+        assertThat(wrong).isEqualTo(unknown);
+
+        User persisted = userRepository.findById(user.getUserId()).orElseThrow();
+        assertThat(persisted.getFailedLoginAttempts()).isEqualTo(1);
+        assertThat(persisted.getLastLoginAt()).isNull();
+        JsonNode correct = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), PASSWORD),
+                "application/json", null), 403, LOGIN_PATH);
+        assertThat(correct.get("message").asText()).isEqualTo("Account is inactive");
+        assertThat(userRepository.findById(user.getUserId()).orElseThrow().getFailedLoginAttempts()).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @EnumSource(UserStatus.class)
+    void lockedAccountDisclosesLockOnlyAfterCorrectPassword(UserStatus status) throws Exception {
+        User user = createUser();
+        user.setStatus(status);
+        user.setFailedLoginAttempts(4);
+        userRepository.saveAndFlush(user);
+
+        for (int attempts = 5; attempts <= 6; attempts++) {
+            JsonNode wrong = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), "wrong-password"),
+                    "application/json", null), 401, LOGIN_PATH);
+            assertThat(wrong.get("message").asText()).isEqualTo("Invalid email or password");
+            assertThat(wrong.has("lockedUntil")).isFalse();
+            User persisted = userRepository.findById(user.getUserId()).orElseThrow();
+            assertThat(persisted.getFailedLoginAttempts()).isEqualTo(attempts);
+            assertThat(persisted.getLockedUntil()).isAfter(Instant.now());
+            assertThat(persisted.getLastLoginAt()).isNull();
+        }
+        JsonNode correct = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), PASSWORD),
+                "application/json", null), 423, LOGIN_PATH);
+        assertThat(correct.get("lockedUntil").asText()).isNotBlank();
+        assertThat(userRepository.findById(user.getUserId()).orElseThrow().getFailedLoginAttempts()).isEqualTo(6);
     }
 
     @Test
@@ -136,6 +216,7 @@ class AuthHttpIntegrationTest {
         String email = newEmail();
         int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         String atLimit = character.repeat(72 / bytesPerCharacter);
+        assertThat(atLimit.getBytes(java.nio.charset.StandardCharsets.UTF_8)).hasSize(72);
         JsonNode error = assertError(send("POST", REGISTER_PATH, registerBody(email, atLimit + "a"),
                 "application/json", null), 400, REGISTER_PATH);
         assertThat(error.get("validationErrors").get("password").asText())
@@ -151,12 +232,27 @@ class AuthHttpIntegrationTest {
         assertThat(login.statusCode()).isEqualTo(200);
         String token = objectMapper.readTree(login.body()).get("accessToken").asText();
         assertThat(jwtService.isTokenValid(token, new IdentityUserDetails(user))).isTrue();
+
+        Instant lastLoginAt = userRepository.findByEmail(email).orElseThrow().getLastLoginAt();
+        String overLimit = atLimit + "b";
+        assertThat(overLimit.getBytes(java.nio.charset.StandardCharsets.UTF_8)).hasSize(73);
+        JsonNode loginError = assertError(send("POST", LOGIN_PATH, loginBody(email, overLimit),
+                "application/json", null), 400, LOGIN_PATH);
+        assertThat(loginError.get("validationErrors").get("password").asText())
+                .isEqualTo("Password must not exceed 72 bytes");
+        User persisted = userRepository.findByEmail(email).orElseThrow();
+        assertThat(persisted.getFailedLoginAttempts()).isZero();
+        assertThat(persisted.getLockedUntil()).isNull();
+        assertThat(persisted.getLastLoginAt()).isEqualTo(lastLoginAt);
     }
 
     private HttpResponse<String> send(String method, String path, String body, String accept, String token)
             throws Exception {
         var builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
-                .timeout(Duration.ofSeconds(15)).header("Accept", accept);
+                .timeout(Duration.ofSeconds(15));
+        if (accept != null) {
+            builder.header("Accept", accept);
+        }
         if (token != null) {
             builder.header("Authorization", "Bearer " + token);
         }
@@ -177,6 +273,7 @@ class AuthHttpIntegrationTest {
         assertThat(error.get("message").asText()).isNotBlank();
         assertThat(error.get("path").asText()).isEqualTo(path);
         assertThat(Instant.parse(error.get("timestamp").asText())).isNotNull();
+        assertThat(error.has("accessToken")).isFalse();
         return error;
     }
 
@@ -197,5 +294,9 @@ class AuthHttpIntegrationTest {
 
     private String registerBody(String email, String password) {
         return "{\"email\":\"%s\",\"password\":\"%s\",\"fullName\":\"Security Test\"}".formatted(email, password);
+    }
+
+    private String loginBody(String email, String password) {
+        return "{\"email\":\"%s\",\"password\":\"%s\"}".formatted(email, password);
     }
 }

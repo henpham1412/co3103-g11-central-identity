@@ -95,13 +95,15 @@ class AuthServiceConcurrencyTest {
             for (Future<RuntimeException> result : results) {
                 failures.add(result.get(20, TimeUnit.SECONDS).getClass());
             }
-            assertEquals(4L, failures.stream().filter(InvalidCredentialsException.class::equals).count());
-            assertEquals(4L, failures.stream().filter(AccountLockedException.class::equals).count());
+            assertEquals(requestCount, failures.stream().filter(InvalidCredentialsException.class::equals).count());
 
             User savedUser = userRepository.findByEmail(email).orElseThrow();
-            assertEquals(5, savedUser.getFailedLoginAttempts());
+            assertEquals(requestCount, savedUser.getFailedLoginAttempts());
             assertNotNull(savedUser.getLockedUntil());
             assertTrue(savedUser.getLockedUntil().isAfter(Instant.now()));
+            AccountLockedException locked = assertThrows(AccountLockedException.class, () -> authService.login(
+                    LoginRequest.builder().email(email).password("CorrectPassword123!").build()));
+            assertEquals(savedUser.getLockedUntil(), locked.getLockedUntil());
         } finally {
             start.countDown();
             executor.shutdownNow();

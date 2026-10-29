@@ -23,6 +23,7 @@ import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 @Service
@@ -76,6 +77,10 @@ public class AuthService {
     @Transactional(readOnly = false,
             noRollbackFor = {InvalidCredentialsException.class, AccountLockedException.class})
     public AuthResponse login(LoginRequest request) {
+        // Also protect callers that bypass HTTP bean validation, before any BCrypt work.
+        if (request.getPassword() != null && request.getPassword().getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new InvalidCredentialsException("Invalid email or password");
+        }
         String email = request.getEmail().trim().toLowerCase(Locale.ROOT);
         User user = userRepository.findByEmailForUpdate(email)
                 .orElseThrow(() -> {
@@ -83,21 +88,10 @@ public class AuthService {
                     return new InvalidCredentialsException("Invalid email or password");
                 });
 
-        // Every found account pays the password-hash cost before status or lockout checks.
+        // Do not disclose status or lockout information until credentials have been verified.
         boolean passwordMatches = passwordEncoder.matches(request.getPassword(), user.getPasswordHash());
-        if (user.getStatus() == UserStatus.INACTIVE) {
-            throw new AccountInactiveException("Account is inactive");
-        }
-        if (user.getStatus() != UserStatus.ACTIVE) {
-            throw new InvalidCredentialsException("Invalid email or password");
-        }
-
         Instant now = Instant.now();
-        if (user.getLockedUntil() != null) {
-            if (now.isBefore(user.getLockedUntil())) {
-                throw new AccountLockedException(
-                        "Account is temporarily locked until " + user.getLockedUntil(), user.getLockedUntil());
-            }
+        if (user.getLockedUntil() != null && !now.isBefore(user.getLockedUntil())) {
             user.setLockedUntil(null);
             user.setFailedLoginAttempts(0);
         }
@@ -105,15 +99,19 @@ public class AuthService {
         if (!passwordMatches) {
             int attempts = (user.getFailedLoginAttempts() == null ? 0 : user.getFailedLoginAttempts()) + 1;
             user.setFailedLoginAttempts(attempts);
-            if (attempts >= 5) {
-                user.setLockedUntil(Instant.now().plus(Duration.ofMinutes(15)));
+            if (attempts >= 5 && user.getLockedUntil() == null) {
+                user.setLockedUntil(now.plus(Duration.ofMinutes(15)));
             }
             userRepository.save(user);
-            if (user.getLockedUntil() != null) {
-                throw new AccountLockedException(
-                        "Account is locked due to 5 consecutive failed login attempts", user.getLockedUntil());
-            }
             throw new InvalidCredentialsException("Invalid email or password");
+        }
+
+        if (user.getLockedUntil() != null) {
+            throw new AccountLockedException(
+                    "Account is temporarily locked until " + user.getLockedUntil(), user.getLockedUntil());
+        }
+        if (user.getStatus() != UserStatus.ACTIVE) {
+            throw new AccountInactiveException("Account is inactive");
         }
 
         user.setFailedLoginAttempts(0);

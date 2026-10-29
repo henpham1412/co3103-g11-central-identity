@@ -211,15 +211,42 @@ class AuthControllerTest {
     @ParameterizedTest
     @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
     void rejectsUnsupportedAcceptBeforeCallingService(String path) throws Exception {
-        for (String accept : new String[]{"application/xml", "text/plain", "image/png"}) {
+        for (String accept : new String[]{"application/xml", "text/plain", "image/png",
+                "application/json;q=0", "application/xml;q=1, */*;q=0",
+                "application/json;q=0, */*;q=1", "*/*;q=1, application/json;q=0",
+                "application/*;q=0, */*;q=1"}) {
             mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).accept(accept)
                             .content(REGISTER_PATH.equals(path) ? REGISTER_JSON : LOGIN_JSON))
                     .andExpect(status().isNotAcceptable())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.status").value(406))
+                    .andExpect(jsonPath("$.code").value("NOT_ACCEPTABLE"))
                     .andExpect(jsonPath("$.path").value(path))
                     .andExpect(jsonPath("$.timestamp").isNotEmpty());
         }
+        verifyNoInteractions(authService, userRepository);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
+    void explicitJsonExclusionAcrossAcceptHeaderLinesRejectsBeforeService(String path) throws Exception {
+        mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON)
+                        .header("Accept", "*/*;q=1", "application/json;q=0")
+                        .content(REGISTER_PATH.equals(path) ? REGISTER_JSON : LOGIN_JSON))
+                .andExpect(status().isNotAcceptable())
+                .andExpect(jsonPath("$.code").value("NOT_ACCEPTABLE"));
+        verifyNoInteractions(authService, userRepository);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a", "\u00e9", "\u20ac", "\uD83D\uDE00"})
+    void loginRejects73Utf8BytesBeforeService(String character) throws Exception {
+        int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        String password = character.repeat(72 / bytesPerCharacter) + "b";
+        expectError(LOGIN_PATH, LOGIN_JSON.replace(PASSWORD, password), 400, "Bad Request", "Validation failed")
+                .andExpect(jsonPath("$.validationErrors.password").value("Password must not exceed 72 bytes"))
+                .andExpect(jsonPath("$.accessToken").doesNotExist())
+                .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService, userRepository);
     }
 

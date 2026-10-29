@@ -141,7 +141,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.NOT_ACCEPTABLE,
-                        "Requested response media type is not supported", request).build());
+                        "Requested response media type is not supported", request).code("NOT_ACCEPTABLE").build());
     }
 
     @ExceptionHandler(NoResourceFoundException.class)

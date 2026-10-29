@@ -7,6 +7,7 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLength;
 
 @Getter
 @Setter
@@ -20,5 +21,6 @@ public class ResetPasswordRequest {
 
     @NotBlank(message = "Password is required")
     @Size(min = 8, max = 128, message = "Password must be between 8 and 128 characters")
+    @Utf8ByteLength(max = 72, message = "Password must not exceed 72 bytes")
     private String newPassword;
 }

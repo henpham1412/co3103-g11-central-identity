@@ -87,4 +87,30 @@ class AuthDtoTest {
                 .build();
         assertFalse(validator.validate(badReset).isEmpty());
     }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a", "\u00e9", "\u20ac", "\uD83D\uDE00"})
+    void loginAndResetEnforce72Utf8Bytes(String character) {
+        int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        String atLimit = character.repeat(72 / bytesPerCharacter);
+        LoginRequest login = LoginRequest.builder().email("student@example.com").password(atLimit).build();
+        ResetPasswordRequest reset = ResetPasswordRequest.builder().token("reset-token")
+                .newPassword(atLimit).build();
+
+        assertTrue(validator.validate(login).isEmpty());
+        assertTrue(validator.validate(reset).isEmpty());
+        login.setPassword(atLimit + "b");
+        reset.setNewPassword(atLimit + "b");
+
+        var loginViolations = validator.validate(login);
+        var resetViolations = validator.validate(reset);
+        assertEquals(1, loginViolations.size());
+        assertEquals(1, resetViolations.size());
+        var loginViolation = loginViolations.iterator().next();
+        var resetViolation = resetViolations.iterator().next();
+        assertEquals("password", loginViolation.getPropertyPath().toString());
+        assertEquals("newPassword", resetViolation.getPropertyPath().toString());
+        assertEquals("Password must not exceed 72 bytes", loginViolation.getMessage());
+        assertEquals("Password must not exceed 72 bytes", resetViolation.getMessage());
+    }
 }
