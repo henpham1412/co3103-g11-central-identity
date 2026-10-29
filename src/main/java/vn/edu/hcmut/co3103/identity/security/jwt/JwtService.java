@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import vn.edu.hcmut.co3103.identity.config.JwtProperties;
 import vn.edu.hcmut.co3103.identity.entity.User;
+import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 
 import javax.crypto.SecretKey;
 import java.util.Date;
@@ -63,6 +64,14 @@ public class JwtService {
         if (userDetails instanceof User user) {
             return buildToken(identityClaims(user, claims));
         }
+        if (userDetails instanceof IdentityUserDetails identity) {
+            Map<String, Object> identityClaims = new HashMap<>(claims);
+            identityClaims.put("userId", identity.getUserId());
+            identityClaims.put("email", identity.getUsername());
+            identityClaims.put("fullName", identity.getFullName());
+            identityClaims.put("role", "USER");
+            return buildToken(identityClaims);
+        }
         // Generic UserDetails has no identity fields: callers must supply userId and fullName.
         Map<String, Object> identity = new HashMap<>(claims);
         identity.put("email", userDetails.getUsername());
@@ -85,7 +94,7 @@ public class JwtService {
     private String buildToken(Map<String, Object> claims) {
         Object id = claims.get("userId");
         String subject = id instanceof UUID uuid ? uuid.toString() : id instanceof String text ? text : null;
-        if (subject == null || !UUID.fromString(subject).toString().equalsIgnoreCase(subject)) {
+        if (!isCanonicalUuid(subject)) {
             throw new IllegalArgumentException("A canonical UUID userId is required to issue a token");
         }
         subject = UUID.fromString(subject).toString();
@@ -106,21 +115,11 @@ public class JwtService {
     }
 
     public String extractEmail(String token) {
-        return extractClaim(token, this::emailFromClaims);
-    }
-
-    private String emailFromClaims(Claims claims) {
-        String email = claims.get("email", String.class);
-        String subject = claims.getSubject();
-        return email == null && subject != null && subject.contains("@") ? subject : email;
+        return extractClaim(token, claims -> claims.get("email", String.class));
     }
 
     public String extractUserId(String token) {
-        return extractClaim(token, claims -> {
-            String subject = claims.getSubject();
-            return StringUtils.hasText(subject) && !subject.contains("@")
-                    ? subject : claims.get("userId", String.class);
-        });
+        return extractClaim(token, claims -> claims.get("userId", String.class));
     }
 
     public String extractUsername(String token) {
@@ -134,9 +133,7 @@ public class JwtService {
     public boolean isTokenValid(String token) {
         try {
             Claims claims = extractAllClaims(token);
-            return StringUtils.hasText(claims.getSubject())
-                    && claims.getExpiration() != null
-                    && claims.getExpiration().after(new Date());
+            return claims.getExpiration().after(new Date());
         } catch (JwtException | IllegalArgumentException exception) {
             return false;
         }
@@ -145,9 +142,11 @@ public class JwtService {
     public boolean isTokenValid(String token, UserDetails userDetails) {
         try {
             Claims claims = extractAllClaims(token);
-            return StringUtils.hasText(claims.getSubject())
-                    && userDetails.getUsername().equals(emailFromClaims(claims))
-                    && claims.getExpiration() != null
+            UUID userId = userDetails instanceof IdentityUserDetails identity ? identity.getUserId()
+                    : userDetails instanceof User user ? user.getUserId() : null;
+            return userId != null
+                    && userId.toString().equals(claims.getSubject())
+                    && claims.get("email", String.class).equalsIgnoreCase(userDetails.getUsername())
                     && claims.getExpiration().after(new Date());
         } catch (JwtException | IllegalArgumentException exception) {
             return false;
@@ -157,7 +156,7 @@ public class JwtService {
     /** Returns true for expired or non-expiring tokens; rejects other invalid JWTs. */
     public boolean isTokenExpired(String token) {
         try {
-            Date expiration = extractClaim(token, Claims::getExpiration);
+            Date expiration = jwtParser.parseSignedClaims(token).getPayload().getExpiration();
             return expiration == null || !expiration.after(new Date());
         } catch (ExpiredJwtException exception) {
             return true;
@@ -165,6 +164,31 @@ public class JwtService {
     }
 
     private Claims extractAllClaims(String token) {
-        return jwtParser.parseSignedClaims(token).getPayload();
+        Claims claims = jwtParser.parseSignedClaims(token).getPayload();
+        for (String name : new String[]{"sub", "userId", "email", "role", "fullName"}) {
+            if (!(claims.get(name) instanceof String value) || !StringUtils.hasText(value)) {
+                throw new JwtException("Required identity claim is missing or invalid: " + name);
+            }
+        }
+        String subject = claims.getSubject();
+        String userId = claims.get("userId", String.class);
+        if (!isCanonicalUuid(subject) || !isCanonicalUuid(userId) || !subject.equals(userId)) {
+            throw new JwtException("JWT subject and userId must identify the same canonical UUID");
+        }
+        if (claims.getExpiration() == null) {
+            throw new JwtException("JWT expiration is required");
+        }
+        return claims;
+    }
+
+    private static boolean isCanonicalUuid(String value) {
+        if (value == null) {
+            return false;
+        }
+        try {
+            return UUID.fromString(value).toString().equals(value);
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 }

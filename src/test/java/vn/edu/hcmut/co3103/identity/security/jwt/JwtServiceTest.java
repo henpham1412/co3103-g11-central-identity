@@ -15,9 +15,9 @@ import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.security.core.GrantedAuthority;
 import vn.edu.hcmut.co3103.identity.config.JwtProperties;
 import vn.edu.hcmut.co3103.identity.entity.User;
+import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
@@ -26,8 +26,6 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
 import java.util.HashMap;
-import java.util.Collection;
-import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -103,7 +101,7 @@ class JwtServiceTest {
     void generatesTokenFromUserWithoutClientId() {
         String token = jwtService.generateToken(user);
 
-        assertTrue(jwtService.isTokenValid(token, userDetails));
+        assertTrue(jwtService.isTokenValid(token, identityDetails));
         assertEquals(EMAIL, jwtService.extractEmail(token));
         assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, claims -> claims.get("userId")));
         assertEquals(user.getFullName(), jwtService.extractClaim(token, claims -> claims.get("fullName")));
@@ -114,7 +112,7 @@ class JwtServiceTest {
     void generatesTokenWhenOptionalClientIdIsAbsent() {
         String token = jwtService.generateToken(user, null);
 
-        assertTrue(jwtService.isTokenValid(token, userDetails));
+        assertTrue(jwtService.isTokenValid(token, identityDetails));
         assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, claims -> claims.get("userId")));
         assertNull(jwtService.extractClaim(token, claims -> claims.get("clientId")));
     }
@@ -208,7 +206,7 @@ class JwtServiceTest {
     void rejectsUserWithoutPersistedIdOrFullName() {
         user.setUserId(null);
         assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(user));
-        ((User) identityDetails).setUserId(null);
+        identityDetails = new IdentityUserDetails(user);
         assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(identityDetails));
         assertThrows(IllegalArgumentException.class, () -> jwtService.generateToken(
                 Map.of("userId", UUID.randomUUID().toString()), identityDetails));
@@ -248,7 +246,7 @@ class JwtServiceTest {
         String token = jwtService.generateToken(identityDetails);
 
         assertTrue(jwtService.isTokenValid(token));
-        assertTrue(jwtService.isTokenValid(token, userDetails));
+        assertTrue(jwtService.isTokenValid(token, identityDetails));
         assertFalse(jwtService.isTokenExpired(token));
     }
 
@@ -272,7 +270,7 @@ class JwtServiceTest {
 
         assertTrue(jwtService.isTokenExpired(token));
         assertFalse(jwtService.isTokenValid(token));
-        assertFalse(jwtService.isTokenValid(token, userDetails));
+        assertFalse(jwtService.isTokenValid(token, identityDetails));
         assertThrows(ExpiredJwtException.class, () -> jwtService.extractEmail(token));
     }
 
@@ -285,7 +283,7 @@ class JwtServiceTest {
                 + Encoders.BASE64URL.encode(payload.getBytes(StandardCharsets.UTF_8)) + "." + parts[2];
 
         assertFalse(jwtService.isTokenValid(tamperedToken));
-        assertFalse(jwtService.isTokenValid(tamperedToken, userDetails));
+        assertFalse(jwtService.isTokenValid(tamperedToken, identityDetails));
         assertThrows(JwtException.class, () -> jwtService.extractEmail(tamperedToken));
         assertThrows(JwtException.class, () -> jwtService.isTokenExpired(tamperedToken));
     }
@@ -309,7 +307,7 @@ class JwtServiceTest {
                 .compact();
 
         assertFalse(jwtService.isTokenValid(token));
-        assertFalse(jwtService.isTokenValid(token, userDetails));
+        assertFalse(jwtService.isTokenValid(token, identityDetails));
         assertThrows(JwtException.class, () -> jwtService.extractEmail(token));
     }
 
@@ -318,7 +316,7 @@ class JwtServiceTest {
     @ValueSource(strings = {" ", "not-a-jwt", "abc.def.ghi"})
     void rejectsMalformedOrMissingTokens(String token) {
         assertFalse(jwtService.isTokenValid(token));
-        assertFalse(jwtService.isTokenValid(token, userDetails));
+        assertFalse(jwtService.isTokenValid(token, identityDetails));
     }
 
     @Test
@@ -335,7 +333,7 @@ class JwtServiceTest {
         String token = Jwts.builder().subject(EMAIL).signWith(signingKey).compact();
 
         assertFalse(jwtService.isTokenValid(token));
-        assertFalse(jwtService.isTokenValid(token, userDetails));
+        assertFalse(jwtService.isTokenValid(token, identityDetails));
         assertTrue(jwtService.isTokenExpired(token));
     }
 
@@ -348,7 +346,7 @@ class JwtServiceTest {
                 .signWith(signingKey).compact();
 
         assertFalse(jwtService.isTokenValid(token));
-        assertFalse(jwtService.isTokenValid(token, userDetails));
+        assertFalse(jwtService.isTokenValid(token, identityDetails));
     }
 
     @Test
@@ -359,7 +357,7 @@ class JwtServiceTest {
                 .signWith(signingKey).compact();
 
         assertFalse(jwtService.isTokenValid(token));
-        assertFalse(jwtService.isTokenValid(token, userDetails));
+        assertFalse(jwtService.isTokenValid(token, identityDetails));
     }
 
     @Test
@@ -382,7 +380,7 @@ class JwtServiceTest {
                 service.generateToken(identityDetails), service.generateToken(Map.of(), identityDetails),
                 service.generateToken(Map.of("userId", user.getUserId(), "fullName", user.getFullName()), userDetails)}) {
             assertEquals("HS256", parser.parseSignedClaims(token).getHeader().getAlgorithm());
-            assertTrue(service.isTokenValid(token, userDetails));
+            assertTrue(service.isTokenValid(token, identityDetails));
         }
     }
 
@@ -399,73 +397,90 @@ class JwtServiceTest {
                 .compact();
 
         assertFalse(service.isTokenValid(token));
-        assertFalse(service.isTokenValid(token, userDetails));
+        assertFalse(service.isTokenValid(token, identityDetails));
         assertThrows(JwtException.class, () -> service.extractEmail(token));
     }
 
     @Test
-    void readsLegacyEmailSubjectAndUserIdClaim() {
-        String token = Jwts.builder().subject(EMAIL).claim("userId", user.getUserId().toString())
-                .expiration(Date.from(Instant.now().plusSeconds(60)))
-                .signWith(signingKey, Jwts.SIG.HS256).compact();
-
-        assertEquals(EMAIL, jwtService.extractEmail(token));
-        assertEquals(EMAIL, jwtService.extractUsername(token));
-        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
-        assertTrue(jwtService.isTokenValid(token, userDetails));
+    void rejectsLegacyEmailSubjectEvenWithAllOtherClaims() {
+        Map<String, Object> claims = validClaims();
+        claims.put("sub", EMAIL);
+        assertRejected(signClaims(claims));
+        claims.remove("email");
+        assertRejected(signClaims(claims));
     }
 
     @Test
-    void emailClaimTakesPrecedenceOverLegacySubject() {
-        String token = Jwts.builder().subject("old@example.com").claim("email", EMAIL)
-                .expiration(Date.from(Instant.now().plusSeconds(60)))
-                .signWith(signingKey, Jwts.SIG.HS256).compact();
+    void rejectsInconsistentSubjectAndUserId() {
+        Map<String, Object> claims = validClaims();
+        claims.put("userId", UUID.randomUUID().toString());
+        assertRejected(signClaims(claims));
+    }
 
-        assertEquals(EMAIL, jwtService.extractEmail(token));
-        assertTrue(jwtService.isTokenValid(token, userDetails));
+    @ParameterizedTest
+    @ValueSource(strings = {"sub", "userId", "email", "role", "fullName"})
+    void rejectsMissingBlankAndNonStringRequiredClaims(String name) {
+        for (Object invalid : new Object[]{null, "", " ", 123, true, Map.of("value", "invalid")}) {
+            Map<String, Object> claims = validClaims();
+            claims.put(name, invalid);
+            assertRejected(signClaims(claims));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"not-a-uuid", "1-1-1-1-1", "student@example.com",
+            "00000000-0000-0000-0000-000000000000 ", "ABCDEF00-0000-0000-0000-000000000000"})
+    void rejectsNonCanonicalUuidsEvenWhenBothClaimsMatch(String id) {
+        Map<String, Object> claims = validClaims();
+        claims.put("sub", id);
+        claims.put("userId", id);
+        assertRejected(signClaims(claims));
     }
 
     @Test
-    void neverUsesUuidSubjectAsEmailAndPrefersItOverUserIdClaim() {
-        String token = Jwts.builder().subject(user.getUserId().toString()).claim("userId", "other-id")
-                .expiration(Date.from(Instant.now().plusSeconds(60)))
-                .signWith(signingKey, Jwts.SIG.HS256).compact();
+    void rejectsDifferentDatabaseUuidEvenWhenEmailMatches() {
+        String token = jwtService.generateToken(user);
+        user.setUserId(UUID.randomUUID());
+        assertFalse(jwtService.isTokenValid(token, new IdentityUserDetails(user)));
+    }
 
-        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
-        assertNull(jwtService.extractEmail(token));
-        assertNull(jwtService.extractUsername(token));
+    @Test
+    void rejectsPrincipalsWithoutDatabaseUuid() {
+        String token = jwtService.generateToken(user);
         assertFalse(jwtService.isTokenValid(token, userDetails));
+        assertFalse(jwtService.isTokenValid(token, null));
+        user.setUserId(null);
+        assertFalse(jwtService.isTokenValid(token, new IdentityUserDetails(user)));
     }
 
     @Test
-    void extractsUserIdClaimWhenSubjectIsAbsent() {
-        String token = Jwts.builder().claim("userId", user.getUserId().toString())
-                .signWith(signingKey, Jwts.SIG.HS256).compact();
-
-        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
+    void comparesEmailIgnoringCaseButRejectsChangedEmailForSameUuid() {
+        String token = jwtService.generateToken(user);
+        user.setEmail("STUDENT@EXAMPLE.COM");
+        assertTrue(jwtService.isTokenValid(token, new IdentityUserDetails(user)));
+        user.setEmail("other@example.com");
+        assertFalse(jwtService.isTokenValid(token, new IdentityUserDetails(user)));
     }
 
-    private static class IdentityUserDetails extends User implements UserDetails {
-        IdentityUserDetails(User user) {
-            setUserId(user.getUserId());
-            setEmail(user.getEmail());
-            setFullName(user.getFullName());
-            setPasswordHash(user.getPasswordHash());
-        }
+    private Map<String, Object> validClaims() {
+        return new HashMap<>(Map.of("sub", user.getUserId().toString(),
+                "userId", user.getUserId().toString(), "email", EMAIL, "role", "USER",
+                "fullName", user.getFullName()));
+    }
 
-        @Override
-        public Collection<? extends GrantedAuthority> getAuthorities() {
-            return List.of();
-        }
+    private String signClaims(Map<String, Object> claims) {
+        Map<String, Object> payload = new HashMap<>(claims);
+        payload.put("exp", Instant.now().plusSeconds(60).getEpochSecond());
+        // Sign raw JSON so the builder cannot reject malformed reserved claims before our parser sees them.
+        return Jwts.builder().content(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsBytes(payload))
+                .signWith(signingKey, Jwts.SIG.HS256).compact();
+    }
 
-        @Override
-        public String getPassword() {
-            return getPasswordHash();
-        }
-
-        @Override
-        public String getUsername() {
-            return getEmail();
-        }
+    private void assertRejected(String token) {
+        assertFalse(jwtService.isTokenValid(token));
+        assertFalse(jwtService.isTokenValid(token, identityDetails));
+        assertThrows(JwtException.class, () -> jwtService.extractEmail(token));
+        assertThrows(JwtException.class, () -> jwtService.extractUserId(token));
+        assertThrows(JwtException.class, () -> jwtService.extractUsername(token));
     }
 }

@@ -14,6 +14,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -141,6 +142,15 @@ public class GlobalExceptionHandler {
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.NOT_ACCEPTABLE,
                         "Requested response media type is not supported", request).build());
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleNoResourceFound(
+            NoResourceFoundException exception, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.NOT_FOUND, "Requested resource was not found", request)
+                        .code("RESOURCE_NOT_FOUND").build());
     }
 
     @ExceptionHandler(Exception.class)

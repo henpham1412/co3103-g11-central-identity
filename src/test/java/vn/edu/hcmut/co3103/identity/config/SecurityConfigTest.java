@@ -21,7 +21,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.DisabledException;
@@ -47,6 +46,7 @@ import vn.edu.hcmut.co3103.identity.exception.GlobalExceptionHandler;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtAuthenticationFilter;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
+import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -62,6 +62,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -112,6 +114,7 @@ class SecurityConfigTest {
                 .passwordHash(passwordEncoder.encode(PASSWORD))
                 .build();
         when(userRepository.findByEmail(EMAIL)).thenReturn(Optional.of(user));
+        when(userRepository.findById(user.getUserId())).thenReturn(Optional.of(user));
     }
 
     @ParameterizedTest
@@ -286,7 +289,7 @@ class SecurityConfigTest {
     @ParameterizedTest
     @MethodSource("lookupFailures")
     void lookupFailureReturnsJsonServerErrorInsteadOfUnauthorized(RuntimeException failure) throws Exception {
-        when(userRepository.findByEmail(EMAIL)).thenThrow(failure);
+        when(userRepository.findById(user.getUserId())).thenThrow(failure);
 
         mockMvc.perform(get("/api/v1/users/me").accept(MediaType.APPLICATION_XML)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
@@ -315,7 +318,8 @@ class SecurityConfigTest {
                 .andExpect(status().isOk())
                 .andExpect(content().string(EMAIL))
                 .andExpect(result -> assertNull(result.getRequest().getSession(false)));
-        verify(userRepository).findByEmail(EMAIL);
+        verify(userRepository).findById(user.getUserId());
+        verify(userRepository, never()).findByEmail(EMAIL);
 
         mockMvc.perform(get("/api/v1/users/me")).andExpect(status().isUnauthorized());
     }
@@ -350,11 +354,102 @@ class SecurityConfigTest {
 
     @Test
     void rejectsTokenForDeletedUser() throws Exception {
-        when(userRepository.findByEmail(EMAIL)).thenReturn(Optional.empty());
+        when(userRepository.findById(user.getUserId())).thenReturn(Optional.empty());
 
         mockMvc.perform(get("/api/v1/users/me")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user, "lms-client")))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void retainsDatabaseUuidInAuthenticatedPrincipal() throws Exception {
+        mockMvc.perform(get("/api/v1/identity")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
+                .andExpect(status().isOk())
+                .andExpect(content().string(user.getUserId().toString()));
+        verify(userRepository).findById(user.getUserId());
+        verify(userRepository, never()).findByEmail(EMAIL);
+    }
+
+    @Test
+    void rejectsOldTokenAfterEmailIsReusedByAnotherAccount() throws Exception {
+        String oldToken = jwtService.generateToken(user);
+        UUID oldId = user.getUserId();
+        user.setUserId(UUID.randomUUID());
+        when(userRepository.findById(oldId)).thenReturn(Optional.empty());
+
+        mockMvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + oldToken))
+                .andExpect(status().isUnauthorized());
+        verify(userRepository).findById(oldId);
+        verify(userRepository, never()).findByEmail(EMAIL);
+    }
+
+    @Test
+    void rejectsEmailChangeButAllowsEmailCaseDifferences() throws Exception {
+        String token = jwtService.generateToken(user);
+        user.setEmail("STUDENT@EXAMPLE.COM");
+        mockMvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk());
+        user.setEmail("new@example.com");
+        mockMvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"student@example.com", "not-a-uuid", "1-1-1-1-1",
+            "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"})
+    void rejectsInvalidUuidBeforeDatabaseLookup(String subject) throws Exception {
+        String token = Jwts.builder().subject(subject).claim("userId", subject)
+                .claim("email", EMAIL).claim("role", "USER").claim("fullName", user.getFullName())
+                .expiration(Date.from(Instant.now().plusSeconds(60)))
+                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtProperties.getSecret())), Jwts.SIG.HS256)
+                .compact();
+
+        mockMvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void firewallRejectionReturnsJson400WithOriginalPathWithoutForwarding() throws Exception {
+        String path = "/api/v1/auth/login;invalid";
+        mockMvc.perform(post(path).accept(MediaType.APPLICATION_XML))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message").isNotEmpty())
+                .andExpect(jsonPath("$.path").value(path))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty())
+                .andExpect(result -> assertNull(result.getResponse().getForwardedUrl()))
+                .andExpect(result -> assertNull(result.getResponse().getErrorMessage()));
+        verifyNoInteractions(userRepository);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"sub", "userId", "email", "role", "fullName"})
+    void rejectsMissingIdentityClaimBeforeDatabaseLookup(String claim) throws Exception {
+        var claims = new java.util.HashMap<>(jwtService.extractClaim(jwtService.generateToken(user), value -> value));
+        claims.remove(claim);
+        String token = Jwts.builder().claims(claims)
+                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtProperties.getSecret())), Jwts.SIG.HS256)
+                .compact();
+
+        mockMvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void rejectsConflictingUuidClaimsBeforeDatabaseLookup() throws Exception {
+        var claims = jwtService.extractClaim(jwtService.generateToken(user), value -> value);
+        String token = Jwts.builder().claims(claims).claim("userId", UUID.randomUUID().toString())
+                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtProperties.getSecret())), Jwts.SIG.HS256)
+                .compact();
+
+        mockMvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(userRepository);
     }
 
     @ParameterizedTest
@@ -405,7 +500,6 @@ class SecurityConfigTest {
 
     @Configuration
     @EnableWebMvc
-    @EnableMethodSecurity
     @Import({SecurityConfig.class, JwtService.class, JwtAuthenticationFilter.class,
             GlobalExceptionHandler.class, ProbeController.class})
     static class TestConfig {
@@ -417,6 +511,11 @@ class SecurityConfigTest {
 
     @RestController
     static class ProbeController {
+        @GetMapping("/api/v1/identity")
+        public String identity(Authentication authentication) {
+            return ((IdentityUserDetails) authentication.getPrincipal()).getUserId().toString();
+        }
+
         @GetMapping("/api/v1/admin")
         @PreAuthorize("hasRole('ADMIN')")
         public String admin() {

@@ -11,17 +11,16 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 import tools.jackson.databind.ObjectMapper;
 import vn.edu.hcmut.co3103.identity.exception.ApiErrorResponse;
+import vn.edu.hcmut.co3103.identity.repository.UserRepository;
+import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 
 import java.io.IOException;
+import java.util.UUID;
 
 @Component
 @RequiredArgsConstructor
@@ -29,7 +28,7 @@ import java.io.IOException;
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
-    private final UserDetailsService userDetailsService;
+    private final UserRepository userRepository;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -39,17 +38,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (authorization != null && authorization.regionMatches(true, 0, "Bearer ", 0, 7)
                 && SecurityContextHolder.getContext().getAuthentication() == null) {
             String token = authorization.substring(7).trim();
-            String email;
+            UUID userId;
             try {
-                email = jwtService.extractEmail(token);
+                // Extraction verifies the signature and the complete, canonical identity contract.
+                userId = UUID.fromString(jwtService.extractUserId(token));
             } catch (JwtException | IllegalArgumentException exception) {
                 // Only token parsing failures are treated as invalid credentials.
                 filterChain.doFilter(request, response);
                 return;
             }
             try {
-                if (StringUtils.hasText(email)) {
-                    UserDetails userDetails = userDetailsService.loadUserByUsername(email);
+                var user = userRepository.findById(userId).orElse(null);
+                if (user != null) {
+                    var userDetails = new IdentityUserDetails(user);
                     if (jwtService.isTokenValid(token, userDetails)
                             && userDetails.isEnabled() && userDetails.isAccountNonLocked()
                             && userDetails.isAccountNonExpired() && userDetails.isCredentialsNonExpired()) {
@@ -62,8 +63,6 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         SecurityContextHolder.setContext(context);
                     }
                 }
-            } catch (UsernameNotFoundException exception) {
-                // Invalid credentials leave the request unauthenticated for the security chain.
             } catch (RuntimeException exception) {
                 // Infrastructure failures (including transaction creation) are server errors, not bad tokens.
                 log.error("User lookup failed for request {}", request.getRequestURI(), exception);

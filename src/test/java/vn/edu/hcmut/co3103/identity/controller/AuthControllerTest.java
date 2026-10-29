@@ -49,7 +49,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -209,6 +208,31 @@ class AuthControllerTest {
         verifyNoInteractions(authService);
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
+    void rejectsUnsupportedAcceptBeforeCallingService(String path) throws Exception {
+        for (String accept : new String[]{"application/xml", "text/plain", "image/png"}) {
+            mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).accept(accept)
+                            .content(REGISTER_PATH.equals(path) ? REGISTER_JSON : LOGIN_JSON))
+                    .andExpect(status().isNotAcceptable())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                    .andExpect(jsonPath("$.status").value(406))
+                    .andExpect(jsonPath("$.path").value(path))
+                    .andExpect(jsonPath("$.timestamp").isNotEmpty());
+        }
+        verifyNoInteractions(authService, userRepository);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
+    void rejectsUnsupportedContentTypeBeforeCallingService(String path) throws Exception {
+        mockMvc.perform(post(path).contentType(MediaType.APPLICATION_XML).content("<request/>"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(415));
+        verifyNoInteractions(authService, userRepository);
+    }
+
     @Test
     void registerReturnsConflictForDuplicateEmail() throws Exception {
         String message = "Email already exists: " + EMAIL;
@@ -232,17 +256,10 @@ class AuthControllerTest {
     void registerRejectsPasswordsExceedingBcryptByteLimit(String character, int repetitions) throws Exception {
         String password = character.repeat(repetitions);
         String requestBody = REGISTER_JSON.replace(PASSWORD, password);
-        AuthService realAuthService = new AuthService(userRepository, passwordEncoder, jwtService, jwtProperties);
-        // Exercise the actual service and BCrypt, including UTF-8 passwords shorter than 72 characters.
-        when(authService.register(any(RegisterRequest.class)))
-                .thenAnswer(invocation -> realAuthService.register(invocation.getArgument(0)));
-
-        expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Invalid request argument")
-                .andExpect(jsonPath("$", aMapWithSize(5)))
+        expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
+                .andExpect(jsonPath("$.validationErrors.password").value("Password must not exceed 72 UTF-8 bytes"))
                 .andExpect(content().string(not(containsString(password))));
-        verify(authService).register(argThat(request -> password.equals(request.getPassword())));
-        verify(userRepository).existsByEmail(EMAIL);
-        verifyNoMoreInteractions(userRepository);
+        verifyNoInteractions(authService, userRepository);
     }
 
     @Test

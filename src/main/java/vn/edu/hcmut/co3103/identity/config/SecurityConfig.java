@@ -15,6 +15,7 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -24,24 +25,24 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.firewall.RequestRejectedHandler;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.DefaultCorsProcessor;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
-import vn.edu.hcmut.co3103.identity.entity.UserStatus;
 import vn.edu.hcmut.co3103.identity.exception.ApiErrorResponse;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtAuthenticationFilter;
+import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.time.Instant;
-import java.util.Collections;
 import java.util.List;
 
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 @EnableConfigurationProperties(JwtProperties.class)
 public class SecurityConfig {
 
@@ -113,6 +114,18 @@ public class SecurityConfig {
     }
 
     @Bean
+    public RequestRejectedHandler requestRejectedHandler(ObjectMapper objectMapper) {
+        return (request, response, exception) -> {
+            response.setStatus(HttpStatus.BAD_REQUEST.value());
+            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+            objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()
+                    .status(HttpStatus.BAD_REQUEST.value()).error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                    .code("INVALID_REQUEST").message(exception.getMessage())
+                    .path(request.getRequestURI()).build());
+        };
+    }
+
+    @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(corsAllowedOrigins);
@@ -144,12 +157,7 @@ public class SecurityConfig {
         return email -> {
             var user = userRepository.findByEmail(email)
                     .orElseThrow(() -> new UsernameNotFoundException("User not found"));
-            return org.springframework.security.core.userdetails.User.withUsername(user.getEmail())
-                    .password(user.getPasswordHash())
-                    .authorities(Collections.emptyList())
-                    .disabled(user.getStatus() != UserStatus.ACTIVE)
-                    .accountLocked(user.getLockedUntil() != null && user.getLockedUntil().isAfter(Instant.now()))
-                    .build();
+            return new IdentityUserDetails(user);
         };
     }
 

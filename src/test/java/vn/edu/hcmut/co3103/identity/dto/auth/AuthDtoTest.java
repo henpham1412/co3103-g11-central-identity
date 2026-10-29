@@ -5,6 +5,8 @@ import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.ForgotPasswordRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
@@ -46,6 +48,23 @@ class AuthDtoTest {
 
         assertTrue(validator.validate(registerRequest).isEmpty());
         assertTrue(validator.validate(loginRequest).isEmpty());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a", "\u00e9", "\u20ac", "\uD83D\uDE00"})
+    void validatesBcryptLimitInUtf8BytesIncludingMultibyteBoundary(String character) {
+        int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        String atLimit = character.repeat(72 / bytesPerCharacter);
+        RegisterRequest request = RegisterRequest.builder().email("student@example.com")
+                .fullName("Test Student").password(atLimit).build();
+
+        assertTrue(validator.validate(request).isEmpty());
+        request.setPassword(atLimit + "a");
+        var violations = validator.validate(request);
+        assertEquals(1, violations.size());
+        var violation = violations.iterator().next();
+        assertEquals("password", violation.getPropertyPath().toString());
+        assertEquals("Password must not exceed 72 UTF-8 bytes", violation.getMessage());
     }
 
     @Test
