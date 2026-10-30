@@ -6,8 +6,6 @@ import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.io.Encoders;
-import io.jsonwebtoken.security.Keys;
-import io.jsonwebtoken.security.WeakKeyException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -19,9 +17,11 @@ import vn.edu.hcmut.co3103.identity.config.JwtProperties;
 import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 
-import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
@@ -39,23 +39,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JwtServiceTest {
 
-    private static final String SECRET = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
     private static final String EMAIL = "student@example.com";
     private static final String CLIENT_ID = "lms-client";
 
     private JwtProperties properties;
     private JwtService jwtService;
-    private SecretKey signingKey;
+    private PrivateKey signingKey;
+    private PublicKey publicKey;
+    private String keyId;
     private User user;
     private UserDetails userDetails;
     private UserDetails identityDetails;
 
     @BeforeEach
     void setUp() {
-        properties = new JwtProperties();
-        properties.setSecret(SECRET);
+        properties = JwtTestKeys.properties();
         jwtService = new JwtService(properties);
-        signingKey = Keys.hmacShaKeyFor(Decoders.BASE64.decode(SECRET));
+        signingKey = JwtTestKeys.KEY_PAIR.getPrivate();
+        publicKey = JwtTestKeys.KEY_PAIR.getPublic();
+        keyId = (String) jwtService.getJwks().get("keys").getFirst().get("kid");
         user = User.builder()
                 .userId(UUID.fromString("3c6d9c41-950b-45f9-a4be-5286ba845e77"))
                 .email(EMAIL)
@@ -79,10 +81,14 @@ class JwtServiceTest {
     void generatesSignedTokenWithIdentityClaimsAndLifetime() {
         long beforeGeneration = System.currentTimeMillis();
         String token = jwtService.generateToken(user, CLIENT_ID);
-        Claims claims = Jwts.parser().verifyWith(signingKey).build().parseSignedClaims(token).getPayload();
+        var signedClaims = Jwts.parser().verifyWith(publicKey).build().parseSignedClaims(token);
+        Claims claims = signedClaims.getPayload();
 
         assertAll(
                 () -> assertEquals(3, token.split("\\.").length),
+                () -> assertEquals("RS256", signedClaims.getHeader().getAlgorithm()),
+                () -> assertEquals(keyId, signedClaims.getHeader().getKeyId()),
+                () -> assertEquals("http://localhost:8080", claims.getIssuer()),
                 () -> assertEquals(user.getUserId().toString(), claims.getSubject()),
                 () -> assertEquals(user.getUserId().toString(), claims.get("userId", String.class)),
                 () -> assertEquals(EMAIL, claims.get("email", String.class)),
@@ -219,12 +225,14 @@ class JwtServiceTest {
     void usesConfiguredLifetimeAndPreventsCustomClaimsOverridingSubjectOrDates() {
         properties.setExpirationMs(300000L);
         String token = jwtService.generateToken(Map.of(
-                "sub", "other@example.com", "iat", new Date(0), "exp", new Date(0)), identityDetails);
+                "sub", "other@example.com", "iat", new Date(0), "exp", new Date(0),
+                "iss", "https://untrusted.example"), identityDetails);
 
         Date issuedAt = jwtService.extractClaim(token, Claims::getIssuedAt);
         Date expiration = jwtService.extractClaim(token, Claims::getExpiration);
         assertEquals(EMAIL, jwtService.extractEmail(token));
         assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, Claims::getSubject));
+        assertEquals(properties.getIssuer(), jwtService.extractClaim(token, Claims::getIssuer));
         assertTrue(issuedAt.after(new Date(0)));
         assertEquals(300000L, expiration.getTime() - issuedAt.getTime());
         assertTrue(jwtService.isTokenValid(token));
@@ -261,11 +269,11 @@ class JwtServiceTest {
 
     @Test
     void rejectsExpiredTokenAndReportsExpirationWithoutSleeping() {
-        String token = Jwts.builder()
+        String token = Jwts.builder().header().keyId(keyId).and().issuer(properties.getIssuer())
                 .subject(EMAIL)
                 .issuedAt(Date.from(Instant.now().minusSeconds(120)))
                 .expiration(Date.from(Instant.now().minusSeconds(60)))
-                .signWith(signingKey)
+                .signWith(signingKey, Jwts.SIG.RS256)
                 .compact();
 
         assertTrue(jwtService.isTokenExpired(token));
@@ -300,10 +308,10 @@ class JwtServiceTest {
 
     @Test
     void rejectsTokenSignedWithAnotherKey() {
-        String token = Jwts.builder()
+        String token = Jwts.builder().header().keyId(keyId).and().issuer(properties.getIssuer())
                 .subject(EMAIL)
                 .expiration(Date.from(Instant.now().plusSeconds(60)))
-                .signWith(Jwts.SIG.HS256.key().build())
+                .signWith(Jwts.SIG.RS256.keyPair().build().getPrivate(), Jwts.SIG.RS256)
                 .compact();
 
         assertFalse(jwtService.isTokenValid(token));
@@ -321,7 +329,7 @@ class JwtServiceTest {
 
     @Test
     void rejectsUnsignedToken() {
-        String token = Jwts.builder().subject(EMAIL)
+        String token = Jwts.builder().header().keyId(keyId).and().issuer(properties.getIssuer()).subject(EMAIL)
                 .expiration(Date.from(Instant.now().plusSeconds(60))).compact();
 
         assertFalse(jwtService.isTokenValid(token));
@@ -330,7 +338,7 @@ class JwtServiceTest {
 
     @Test
     void rejectsTokenWithoutExpiration() {
-        String token = Jwts.builder().subject(EMAIL).signWith(signingKey).compact();
+        String token = Jwts.builder().header().keyId(keyId).and().issuer(properties.getIssuer()).subject(EMAIL).signWith(signingKey, Jwts.SIG.RS256).compact();
 
         assertFalse(jwtService.isTokenValid(token));
         assertFalse(jwtService.isTokenValid(token, identityDetails));
@@ -341,9 +349,9 @@ class JwtServiceTest {
     @NullAndEmptySource
     @ValueSource(strings = " ")
     void rejectsTokenWithoutMeaningfulSubject(String subject) {
-        String token = Jwts.builder().subject(subject)
+        String token = Jwts.builder().header().keyId(keyId).and().issuer(properties.getIssuer()).subject(subject)
                 .expiration(Date.from(Instant.now().plusSeconds(60)))
-                .signWith(signingKey).compact();
+                .signWith(signingKey, Jwts.SIG.RS256).compact();
 
         assertFalse(jwtService.isTokenValid(token));
         assertFalse(jwtService.isTokenValid(token, identityDetails));
@@ -351,10 +359,10 @@ class JwtServiceTest {
 
     @Test
     void rejectsTokenThatIsNotYetValid() {
-        String token = Jwts.builder().subject(EMAIL)
+        String token = Jwts.builder().header().keyId(keyId).and().issuer(properties.getIssuer()).subject(EMAIL)
                 .notBefore(Date.from(Instant.now().plusSeconds(60)))
                 .expiration(Date.from(Instant.now().plusSeconds(120)))
-                .signWith(signingKey).compact();
+                .signWith(signingKey, Jwts.SIG.RS256).compact();
 
         assertFalse(jwtService.isTokenValid(token));
         assertFalse(jwtService.isTokenValid(token, identityDetails));
@@ -362,43 +370,154 @@ class JwtServiceTest {
 
     @Test
     void rejectsWeakSigningKey() {
-        properties.setSecret(Encoders.BASE64.encode("too-short".getBytes(StandardCharsets.UTF_8)));
-
-        assertThrows(WeakKeyException.class, () -> new JwtService(properties));
+        assertThrows(IllegalArgumentException.class, () -> {
+            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+            generator.initialize(1024);
+            KeyPair weakKeys = generator.generateKeyPair();
+            properties.setPrivateKey(JwtTestKeys.pem(weakKeys.getPrivate(), "PRIVATE KEY"));
+            properties.setPublicKey(JwtTestKeys.pem(weakKeys.getPublic(), "PUBLIC KEY"));
+            new JwtService(properties);
+        });
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {32, 48, 64})
-    void alwaysSignsHs256RegardlessOfKeyLength(int keyLength) {
-        byte[] keyBytes = new byte[keyLength];
-        new SecureRandom().nextBytes(keyBytes);
-        properties.setSecret(Encoders.BASE64.encode(keyBytes));
+    @ValueSource(ints = {2048, 3072})
+    void alwaysSignsRs256RegardlessOfKeyLength(int keyLength) throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(keyLength);
+        KeyPair keys = generator.generateKeyPair();
+        properties.setPrivateKey(JwtTestKeys.pem(keys.getPrivate(), "PRIVATE KEY"));
+        properties.setPublicKey(JwtTestKeys.pem(keys.getPublic(), "PUBLIC KEY"));
         JwtService service = new JwtService(properties);
-        var parser = Jwts.parser().verifyWith(Keys.hmacShaKeyFor(keyBytes)).build();
+        var parser = Jwts.parser().verifyWith(keys.getPublic()).build();
 
         for (String token : new String[]{service.generateToken(user), service.generateToken(user, CLIENT_ID),
                 service.generateToken(identityDetails), service.generateToken(Map.of(), identityDetails),
                 service.generateToken(Map.of("userId", user.getUserId(), "fullName", user.getFullName()), userDetails)}) {
-            assertEquals("HS256", parser.parseSignedClaims(token).getHeader().getAlgorithm());
+            assertEquals("RS256", parser.parseSignedClaims(token).getHeader().getAlgorithm());
             assertTrue(service.isTokenValid(token, identityDetails));
         }
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {48, 64})
-    void rejectsOtherHmacAlgorithmsEvenWithTheCorrectKey(int keyLength) {
-        byte[] keyBytes = new byte[keyLength];
-        new SecureRandom().nextBytes(keyBytes);
-        properties.setSecret(Encoders.BASE64.encode(keyBytes));
-        JwtService service = new JwtService(properties);
-        String token = Jwts.builder().subject(user.getUserId().toString()).claim("email", EMAIL)
+    @ValueSource(strings = {"RS384", "RS512", "PS256"})
+    void rejectsOtherRsaAlgorithmsEvenWithTheCorrectKey(String algorithm) {
+        String token = Jwts.builder().header().keyId(keyId).and().claims(validClaims())
                 .expiration(Date.from(Instant.now().plusSeconds(60)))
-                .signWith(Keys.hmacShaKeyFor(keyBytes), keyLength == 48 ? Jwts.SIG.HS384 : Jwts.SIG.HS512)
+                .signWith(signingKey, (io.jsonwebtoken.security.SignatureAlgorithm) Jwts.SIG.get().get(algorithm))
                 .compact();
 
-        assertFalse(service.isTokenValid(token));
-        assertFalse(service.isTokenValid(token, identityDetails));
-        assertThrows(JwtException.class, () -> service.extractEmail(token));
+        assertRejected(token);
+    }
+
+    @Test
+    void rejectsHs256IncludingPublicKeyUsedAsHmacSecret() {
+        for (var key : new javax.crypto.SecretKey[]{Jwts.SIG.HS256.key().build(),
+                new javax.crypto.spec.SecretKeySpec(publicKey.getEncoded(), "HmacSHA256")}) {
+            String token = Jwts.builder().header().keyId(keyId).and().claims(validClaims())
+                    .expiration(Date.from(Instant.now().plusSeconds(60)))
+                    .signWith(key, Jwts.SIG.HS256).compact();
+            assertRejected(token);
+        }
+    }
+
+    @Test
+    void publishesOnlyPublicKeyAndSupportsIndependentVerification() throws Exception {
+        var key = jwtService.getJwks().get("keys").getFirst();
+        assertEquals(java.util.Set.of("kid", "kty", "alg", "use", "n", "e"), key.keySet());
+        assertEquals("RSA", key.get("kty"));
+        assertEquals("RS256", key.get("alg"));
+        assertEquals("sig", key.get("use"));
+        assertEquals(keyId, key.get("kid"));
+        var rsa = com.nimbusds.jose.jwk.RSAKey.parse(key);
+        assertFalse(rsa.isPrivate());
+        assertEquals(publicKey, rsa.toRSAPublicKey());
+        var token = com.nimbusds.jwt.SignedJWT.parse(jwtService.generateToken(user));
+        assertTrue(token.verify(new com.nimbusds.jose.crypto.RSASSAVerifier(rsa)));
+        assertEquals(keyId, token.getHeader().getKeyID());
+    }
+
+    @Test
+    void generatesEphemeralKeysAndReusesThemWithinServiceInstance() {
+        JwtService service = new JwtService(new JwtProperties());
+        var jwks = service.getJwks();
+        assertTrue(service.isTokenValid(service.generateToken(user)));
+        assertEquals(jwks, service.getJwks());
+        JwtService anotherInstance = new JwtService(new JwtProperties());
+        assertFalse(anotherInstance.isTokenValid(service.generateToken(user)));
+        assertFalse(jwks.equals(anotherInstance.getJwks()));
+    }
+
+    @Test
+    void configuredKeysKeepTokensAndKeyIdentifierValidAcrossInstances() {
+        JwtService anotherInstance = new JwtService(JwtTestKeys.properties());
+        assertTrue(anotherInstance.isTokenValid(jwtService.generateToken(user)));
+        assertEquals(jwtService.getJwks(), anotherInstance.getJwks());
+    }
+
+    @Test
+    void acceptsEscapedNewlinesInConfiguredPemKeys() {
+        properties.setPrivateKey(properties.getPrivateKey().replace("\n", "\\n"));
+        properties.setPublicKey(properties.getPublicKey().replace("\n", "\\n"));
+        assertTrue(new JwtService(properties).isTokenValid(jwtService.generateToken(user)));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"private", "public"})
+    void rejectsIncompleteMalformedAndNonRsaKeyConfiguration(String key) {
+        for (String invalid : new String[]{null, "", "not-pem", JwtTestKeys.pem(
+                Jwts.SIG.ES256.keyPair().build().getPrivate(), "PRIVATE KEY")}) {
+            JwtProperties broken = JwtTestKeys.properties();
+            if (key.equals("private")) {
+                broken.setPrivateKey(invalid);
+            } else {
+                broken.setPublicKey(invalid);
+            }
+            assertThrows(IllegalArgumentException.class, () -> new JwtService(broken));
+        }
+    }
+
+    @Test
+    void rejectsMismatchedKeyPair() {
+        properties.setPublicKey(JwtTestKeys.pem(Jwts.SIG.RS256.keyPair().build().getPublic(), "PUBLIC KEY"));
+        assertThrows(IllegalArgumentException.class, () -> new JwtService(properties));
+    }
+
+    @Test
+    void usesConfiguredIssuerAndRejectsTokensFromAnotherIssuerWithSameKey() {
+        properties.setIssuer("https://identity.example.com");
+        JwtService service = new JwtService(properties);
+        String token = service.generateToken(user);
+        assertEquals(properties.getIssuer(), service.extractClaim(token, Claims::getIssuer));
+        assertTrue(service.isTokenValid(token));
+        assertRejected(token);
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {" ", "https://untrusted.example"})
+    void rejectsMissingOrWrongIssuer(String issuer) {
+        Map<String, Object> claims = validClaims();
+        claims.put("iss", issuer);
+        assertRejected(signClaims(claims));
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {" ", "unknown-key"})
+    void rejectsMissingOrUnknownKeyIdentifier(String kid) {
+        String token = Jwts.builder().header().keyId(kid).and().claims(validClaims())
+                .expiration(Date.from(Instant.now().plusSeconds(60)))
+                .signWith(signingKey, Jwts.SIG.RS256).compact();
+        assertRejected(token);
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = " ")
+    void rejectsBlankIssuerConfiguration(String issuer) {
+        properties.setIssuer(issuer);
+        assertThrows(IllegalArgumentException.class, () -> new JwtService(properties));
     }
 
     @Test
@@ -465,15 +584,16 @@ class JwtServiceTest {
     private Map<String, Object> validClaims() {
         return new HashMap<>(Map.of("sub", user.getUserId().toString(),
                 "userId", user.getUserId().toString(), "email", EMAIL, "role", "USER",
-                "fullName", user.getFullName()));
+                "fullName", user.getFullName(), "iss", properties.getIssuer()));
     }
 
     private String signClaims(Map<String, Object> claims) {
         Map<String, Object> payload = new HashMap<>(claims);
         payload.put("exp", Instant.now().plusSeconds(60).getEpochSecond());
         // Sign raw JSON so the builder cannot reject malformed reserved claims before our parser sees them.
-        return Jwts.builder().content(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsBytes(payload))
-                .signWith(signingKey, Jwts.SIG.HS256).compact();
+        return Jwts.builder().header().keyId(keyId).and()
+                .content(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsBytes(payload))
+                .signWith(signingKey, Jwts.SIG.RS256).compact();
     }
 
     private void assertRejected(String token) {

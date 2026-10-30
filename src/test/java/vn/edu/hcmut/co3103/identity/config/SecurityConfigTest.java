@@ -1,8 +1,6 @@
 package vn.edu.hcmut.co3103.identity.config;
 
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.io.Decoders;
-import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -46,6 +44,9 @@ import vn.edu.hcmut.co3103.identity.exception.GlobalExceptionHandler;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtAuthenticationFilter;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
+import vn.edu.hcmut.co3103.identity.security.jwt.JwtTestKeys;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
@@ -77,7 +78,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringJUnitWebConfig(SecurityConfigTest.TestConfig.class)
 @TestPropertySource(properties = {
-        "jwt.secret=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+        "jwt.issuer=https://identity.example.com",
         "jwt.expiration-ms=120000",
         "jwt.refresh-expiration-ms=600000"
 })
@@ -104,6 +105,11 @@ class SecurityConfigTest {
     private MockMvc mockMvc;
     private User user;
 
+    @DynamicPropertySource
+    static void rsaKeys(DynamicPropertyRegistry registry) {
+        JwtTestKeys.registerProperties(registry);
+    }
+
     @BeforeEach
     void setUp() {
         mockMvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
@@ -122,6 +128,7 @@ class SecurityConfigTest {
             "POST, /api/v1/auth/login",
             "POST, /api/v1/auth/register",
             "GET, /actuator/health",
+            "GET, /.well-known/jwks.json",
             "GET, /v3/api-docs",
             "POST, /v3/api-docs",
             "GET, /v3/api-docs/swagger-config",
@@ -340,9 +347,10 @@ class SecurityConfigTest {
 
     @Test
     void rejectsExpiredAndTamperedTokensWithoutServerError() throws Exception {
-        String expiredToken = Jwts.builder().subject(EMAIL)
+        String expiredToken = Jwts.builder().header().keyId((String) jwtService.getJwks().get("keys").getFirst().get("kid"))
+                .and().issuer(jwtProperties.getIssuer()).subject(EMAIL)
                 .expiration(Date.from(Instant.now().minusSeconds(60)))
-                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtProperties.getSecret())))
+                .signWith(JwtTestKeys.KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
         String tamperedToken = jwtService.generateToken(user, "lms-client") + "tampered";
 
@@ -399,10 +407,11 @@ class SecurityConfigTest {
     @ValueSource(strings = {"student@example.com", "not-a-uuid", "1-1-1-1-1",
             "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"})
     void rejectsInvalidUuidBeforeDatabaseLookup(String subject) throws Exception {
-        String token = Jwts.builder().subject(subject).claim("userId", subject)
+        String token = Jwts.builder().header().keyId((String) jwtService.getJwks().get("keys").getFirst().get("kid"))
+                .and().issuer(jwtProperties.getIssuer()).subject(subject).claim("userId", subject)
                 .claim("email", EMAIL).claim("role", "USER").claim("fullName", user.getFullName())
                 .expiration(Date.from(Instant.now().plusSeconds(60)))
-                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtProperties.getSecret())), Jwts.SIG.HS256)
+                .signWith(JwtTestKeys.KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
 
         mockMvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
@@ -431,8 +440,9 @@ class SecurityConfigTest {
     void rejectsMissingIdentityClaimBeforeDatabaseLookup(String claim) throws Exception {
         var claims = new java.util.HashMap<>(jwtService.extractClaim(jwtService.generateToken(user), value -> value));
         claims.remove(claim);
-        String token = Jwts.builder().claims(claims)
-                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtProperties.getSecret())), Jwts.SIG.HS256)
+        String token = Jwts.builder().header().keyId((String) jwtService.getJwks().get("keys").getFirst().get("kid"))
+                .and().issuer(jwtProperties.getIssuer()).claims(claims)
+                .signWith(JwtTestKeys.KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
 
         mockMvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
@@ -443,8 +453,9 @@ class SecurityConfigTest {
     @Test
     void rejectsConflictingUuidClaimsBeforeDatabaseLookup() throws Exception {
         var claims = jwtService.extractClaim(jwtService.generateToken(user), value -> value);
-        String token = Jwts.builder().claims(claims).claim("userId", UUID.randomUUID().toString())
-                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtProperties.getSecret())), Jwts.SIG.HS256)
+        String token = Jwts.builder().header().keyId((String) jwtService.getJwks().get("keys").getFirst().get("kid"))
+                .and().issuer(jwtProperties.getIssuer()).claims(claims).claim("userId", UUID.randomUUID().toString())
+                .signWith(JwtTestKeys.KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
 
         mockMvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
@@ -494,6 +505,7 @@ class SecurityConfigTest {
 
     @Test
     void bindsJwtConfigurationProperties() {
+        assertEquals("https://identity.example.com", jwtProperties.getIssuer());
         assertEquals(120000L, jwtProperties.getExpirationMs());
         assertEquals(600000L, jwtProperties.getRefreshExpirationMs());
     }

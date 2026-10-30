@@ -51,12 +51,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(value = AuthController.class,
-        properties = "jwt.secret=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+@WebMvcTest(value = {AuthController.class, JwksController.class})
 @Import({SecurityConfig.class, JwtAuthenticationFilter.class, JwtService.class})
 class AuthControllerTest {
 
@@ -150,6 +150,14 @@ class AuthControllerTest {
                     String token = com.jayway.jsonpath.JsonPath.read(
                             result.getResponse().getContentAsString(), "$.accessToken");
                     assertThat(jwtService.extractUserId(token)).isEqualTo(USER_ID.toString());
+                    String jwks = mockMvc.perform(get("/.well-known/jwks.json"))
+                            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+                    var signed = com.nimbusds.jwt.SignedJWT.parse(token);
+                    var publicKey = com.nimbusds.jose.jwk.JWKSet.parse(jwks)
+                            .getKeyByKeyId(signed.getHeader().getKeyID()).toRSAKey();
+                    assertThat(signed.getHeader().getAlgorithm().getName()).isEqualTo("RS256");
+                    assertThat(signed.getJWTClaimsSet().getIssuer()).isEqualTo(jwtProperties.getIssuer());
+                    assertThat(signed.verify(new com.nimbusds.jose.crypto.RSASSAVerifier(publicKey))).isTrue();
                     String clientId = jwtService.extractClaim(token, claims -> claims.get("clientId", String.class));
                     assertThat(clientId).isEqualTo("lms-client");
                 });

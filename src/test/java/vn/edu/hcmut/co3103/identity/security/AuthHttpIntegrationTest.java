@@ -32,8 +32,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Real HTTP, production security, and committed PostgreSQL transactions (no test rollback). */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "jwt.secret=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class AuthHttpIntegrationTest {
 
     private static final String REGISTER_PATH = "/api/v1/auth/register";
@@ -56,6 +55,25 @@ class AuthHttpIntegrationTest {
 
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final Set<String> testEmails = new HashSet<>();
+
+    @Test
+    void loginTokenCanBeVerifiedWithPublicJwksOverHttp() throws Exception {
+        String email = newEmail();
+        assertThat(send("POST", REGISTER_PATH, registerBody(email, PASSWORD), "application/json", null).statusCode())
+                .isEqualTo(201);
+        HttpResponse<String> login = send("POST", LOGIN_PATH, loginBody(email, PASSWORD), "application/json", null);
+        assertThat(login.statusCode()).isEqualTo(200);
+        String accessToken = objectMapper.readTree(login.body()).get("accessToken").asText();
+        HttpResponse<String> keys = send("GET", "/.well-known/jwks.json", null, "application/json", null);
+        assertThat(keys.statusCode()).isEqualTo(200);
+        var token = com.nimbusds.jwt.SignedJWT.parse(accessToken);
+        var publicKey = com.nimbusds.jose.jwk.JWKSet.parse(keys.body())
+                .getKeyByKeyId(token.getHeader().getKeyID()).toRSAKey();
+        assertThat(publicKey.isPrivate()).isFalse();
+        assertThat(token.getHeader().getAlgorithm().getName()).isEqualTo("RS256");
+        assertThat(token.getJWTClaimsSet().getIssuer()).isEqualTo("http://localhost:8080");
+        assertThat(token.verify(new com.nimbusds.jose.crypto.RSASSAVerifier(publicKey))).isTrue();
+    }
 
     @AfterEach
     void removeOnlyTestUsers() {

@@ -1,12 +1,15 @@
 package vn.edu.hcmut.co3103.identity.security.jwt;
 
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.jwk.KeyUse;
+import com.nimbusds.jose.jwk.RSAKey;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.io.Decoders;
-import io.jsonwebtoken.security.Keys;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -14,9 +17,19 @@ import vn.edu.hcmut.co3103.identity.config.JwtProperties;
 import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 
-import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.PrivateKey;
+import java.security.Signature;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.interfaces.RSAPublicKey;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
@@ -25,20 +38,86 @@ import java.util.function.Function;
 public class JwtService {
 
     private final JwtProperties jwtProperties;
-    private final SecretKey signingKey;
+    private final PrivateKey signingKey;
+    private final String issuer;
+    private final String keyId;
+    private final Map<String, List<Map<String, Object>>> jwks;
     private final JwtParser jwtParser;
 
     public JwtService(JwtProperties jwtProperties) {
         this.jwtProperties = jwtProperties;
-        this.signingKey = Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtProperties.getSecret()));
-        var algorithms = Jwts.parser().verifyWith(signingKey).sig();
-        // JJWT 0.12.6 rejects an empty registry, so retain HS256 while removing the others.
+        if (!StringUtils.hasText(jwtProperties.getIssuer())) {
+            throw new IllegalArgumentException("JWT issuer is required");
+        }
+        this.issuer = jwtProperties.getIssuer();
+        KeyPair keyPair = loadKeyPair(jwtProperties);
+        this.signingKey = keyPair.getPrivate();
+        RSAPublicKey publicKey = (RSAPublicKey) keyPair.getPublic();
+        try {
+            RSAKey publicJwk = new RSAKey.Builder(publicKey).keyIDFromThumbprint()
+                    .algorithm(JWSAlgorithm.RS256).keyUse(KeyUse.SIGNATURE).build();
+            this.keyId = publicJwk.getKeyID();
+            this.jwks = Map.of("keys", List.of(Map.copyOf(publicJwk.toJSONObject())));
+        } catch (JOSEException exception) {
+            throw new IllegalStateException("Unable to create JWT public key identifier", exception);
+        }
+        var algorithms = Jwts.parser().verifyWith(publicKey).requireIssuer(issuer).sig();
+        // JJWT 0.12.6 rejects an empty registry, so retain RS256 while removing the others.
         for (var algorithm : Jwts.SIG.get().values()) {
-            if (!Jwts.SIG.HS256.getId().equals(algorithm.getId())) {
+            if (!Jwts.SIG.RS256.getId().equals(algorithm.getId())) {
                 algorithms.remove(algorithm);
             }
         }
         this.jwtParser = algorithms.and().build();
+    }
+
+    private static KeyPair loadKeyPair(JwtProperties properties) {
+        boolean hasPrivateKey = StringUtils.hasText(properties.getPrivateKey());
+        boolean hasPublicKey = StringUtils.hasText(properties.getPublicKey());
+        if (!hasPrivateKey && !hasPublicKey) {
+            return Jwts.SIG.RS256.keyPair().build();
+        }
+        if (!hasPrivateKey || !hasPublicKey) {
+            throw new IllegalArgumentException("Both JWT private and public keys must be configured");
+        }
+        try {
+            KeyFactory factory = KeyFactory.getInstance("RSA");
+            RSAPrivateKey privateKey = (RSAPrivateKey) factory.generatePrivate(
+                    new PKCS8EncodedKeySpec(decodePem(properties.getPrivateKey(), "PRIVATE KEY")));
+            RSAPublicKey publicKey = (RSAPublicKey) factory.generatePublic(
+                    new X509EncodedKeySpec(decodePem(properties.getPublicKey(), "PUBLIC KEY")));
+            if (privateKey.getModulus().bitLength() < 2048 || publicKey.getModulus().bitLength() < 2048) {
+                throw new IllegalArgumentException("JWT RSA keys must contain at least 2048 bits");
+            }
+            Signature signature = Signature.getInstance("SHA256withRSA");
+            byte[] probe = "jwt-key-pair-check".getBytes(StandardCharsets.US_ASCII);
+            signature.initSign(privateKey);
+            signature.update(probe);
+            byte[] signed = signature.sign();
+            signature.initVerify(publicKey);
+            signature.update(probe);
+            if (!signature.verify(signed)) {
+                throw new IllegalArgumentException("JWT private and public keys must match");
+            }
+            return new KeyPair(publicKey, privateKey);
+        } catch (GeneralSecurityException exception) {
+            throw new IllegalArgumentException("Invalid JWT RSA key configuration", exception);
+        }
+    }
+
+    private static byte[] decodePem(String pem, String type) {
+        String normalized = pem.replace("\\n", "\n").trim();
+        String begin = "-----BEGIN " + type + "-----";
+        String end = "-----END " + type + "-----";
+        if (!normalized.startsWith(begin) || !normalized.endsWith(end)) {
+            throw new IllegalArgumentException("JWT key must use " + type + " PEM encoding");
+        }
+        return Decoders.BASE64.decode(normalized.substring(begin.length(), normalized.length() - end.length())
+                .replaceAll("\\s", ""));
+    }
+
+    public Map<String, List<Map<String, Object>>> getJwks() {
+        return jwks;
     }
 
     public String generateToken(User user) {
@@ -106,11 +185,13 @@ public class JwtService {
         }
         Date issuedAt = new Date();
         return Jwts.builder()
+                .header().keyId(keyId).and()
                 .claims(claims)
+                .issuer(issuer)
                 .subject(subject)
                 .issuedAt(issuedAt)
                 .expiration(new Date(issuedAt.getTime() + jwtProperties.getExpirationMs()))
-                .signWith(signingKey, Jwts.SIG.HS256)
+                .signWith(signingKey, Jwts.SIG.RS256)
                 .compact();
     }
 
@@ -164,7 +245,11 @@ public class JwtService {
     }
 
     private Claims extractAllClaims(String token) {
-        Claims claims = jwtParser.parseSignedClaims(token).getPayload();
+        var signedClaims = jwtParser.parseSignedClaims(token);
+        if (!keyId.equals(signedClaims.getHeader().getKeyId())) {
+            throw new JwtException("JWT key identifier is missing or unknown");
+        }
+        Claims claims = signedClaims.getPayload();
         for (String name : new String[]{"sub", "userId", "email", "role", "fullName"}) {
             if (!(claims.get(name) instanceof String value) || !StringUtils.hasText(value)) {
                 throw new JwtException("Required identity claim is missing or invalid: " + name);

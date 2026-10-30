@@ -66,6 +66,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/.well-known/jwks.json").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions

@@ -125,8 +125,25 @@ The exact database name, connection settings, and schema migration workflow will
 
 Do not commit local database passwords, signing keys, or other secrets to the repository. Keep machine-specific configuration separate from shared project files.
 
-JWT signing requires `JWT_SECRET`, a Base64-encoded key containing at least 32 random bytes
-(for example, generate one with `openssl rand -base64 32`). Set it in the application's environment.
+JWTs are signed with **RS256** and include `iss` and a `kid` header. `JWT_ISSUER` defaults to
+`http://localhost:8080`. Public verification keys are available without authentication at
+`GET /.well-known/jwks.json`; consumers should select the key matching `kid`, allow only RS256,
+and validate the configured issuer and expiration.
+
+Set **both** `JWT_PRIVATE_KEY` (PKCS#8 PEM, `BEGIN PRIVATE KEY`) and `JWT_PUBLIC_KEY`
+(X.509 PEM, `BEGIN PUBLIC KEY`) to a matching RSA pair of at least 2048 bits. PEM values may
+contain real newlines or literal `\n` sequences. For example, generate keys outside the repository:
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt-private.pem
+openssl pkey -in jwt-private.pem -pubout -out jwt-public.pem
+```
+
+Load the file contents into the corresponding environment variables. If neither key is configured,
+the service generates an ephemeral pair at startup for local development. Restarting then invalidates
+existing tokens; configure persistent keys shared by all instances for deployments. Incomplete,
+invalid, weak, or mismatched configured keys prevent startup. Existing HS256 tokens require login again.
+
 `JWT_EXPIRATION_MS` defaults to `86400000` (24 hours), and `JWT_REFRESH_EXPIRATION_MS`
 defaults to `604800000` (7 days). Refresh token issuance is not implemented yet.
 

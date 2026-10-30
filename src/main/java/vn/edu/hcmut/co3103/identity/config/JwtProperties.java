@@ -13,9 +13,15 @@ import org.springframework.validation.annotation.Validated;
 @ConfigurationProperties(prefix = "jwt")
 public class JwtProperties {
 
-    /** Base64-encoded HMAC signing key containing at least 32 random bytes. */
+    /** Issuer shared with services that verify this application's access tokens. */
     @NotBlank
-    private String secret;
+    private String issuer = "http://localhost:8080";
+
+    /** PKCS#8 PEM private key; configure together with the public key. */
+    private String privateKey;
+
+    /** X.509 PEM public key. If both keys are absent, generate an ephemeral RSA pair. */
+    private String publicKey;
 
     @Positive
     private long expirationMs = 86400000L;
