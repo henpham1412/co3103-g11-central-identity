@@ -33,7 +33,6 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -111,7 +110,7 @@ class JwtServiceTest {
         assertEquals(EMAIL, jwtService.extractEmail(token));
         assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, claims -> claims.get("userId")));
         assertEquals(user.getFullName(), jwtService.extractClaim(token, claims -> claims.get("fullName")));
-        assertNull(jwtService.extractClaim(token, claims -> claims.get("clientId")));
+        assertEquals("central-identity", jwtService.extractClaim(token, claims -> claims.get("clientId")));
     }
 
     @Test
@@ -120,7 +119,7 @@ class JwtServiceTest {
 
         assertTrue(jwtService.isTokenValid(token, identityDetails));
         assertEquals(user.getUserId().toString(), jwtService.extractClaim(token, claims -> claims.get("userId")));
-        assertNull(jwtService.extractClaim(token, claims -> claims.get("clientId")));
+        assertEquals("central-identity", jwtService.extractClaim(token, claims -> claims.get("clientId")));
     }
 
     @Test
@@ -439,13 +438,20 @@ class JwtServiceTest {
 
     @Test
     void generatesEphemeralKeysAndReusesThemWithinServiceInstance() {
-        JwtService service = new JwtService(new JwtProperties());
+        JwtProperties developmentProperties = new JwtProperties();
+        developmentProperties.setAllowEphemeralKeys(true);
+        JwtService service = new JwtService(developmentProperties);
         var jwks = service.getJwks();
         assertTrue(service.isTokenValid(service.generateToken(user)));
         assertEquals(jwks, service.getJwks());
-        JwtService anotherInstance = new JwtService(new JwtProperties());
+        JwtService anotherInstance = new JwtService(developmentProperties);
         assertFalse(anotherInstance.isTokenValid(service.generateToken(user)));
         assertFalse(jwks.equals(anotherInstance.getJwks()));
+    }
+
+    @Test
+    void missingKeysFailClosedUnlessEphemeralKeysAreExplicitlyEnabled() {
+        assertThrows(IllegalArgumentException.class, () -> new JwtService(new JwtProperties()));
     }
 
     @Test
@@ -537,7 +543,7 @@ class JwtServiceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"sub", "userId", "email", "role", "fullName"})
+    @ValueSource(strings = {"sub", "userId", "email", "role", "fullName", "clientId"})
     void rejectsMissingBlankAndNonStringRequiredClaims(String name) {
         for (Object invalid : new Object[]{null, "", " ", 123, true, Map.of("value", "invalid")}) {
             Map<String, Object> claims = validClaims();
@@ -584,7 +590,7 @@ class JwtServiceTest {
     private Map<String, Object> validClaims() {
         return new HashMap<>(Map.of("sub", user.getUserId().toString(),
                 "userId", user.getUserId().toString(), "email", EMAIL, "role", "USER",
-                "fullName", user.getFullName(), "iss", properties.getIssuer()));
+                "fullName", user.getFullName(), "clientId", CLIENT_ID, "iss", properties.getIssuer()));
     }
 
     private String signClaims(Map<String, Object> claims) {

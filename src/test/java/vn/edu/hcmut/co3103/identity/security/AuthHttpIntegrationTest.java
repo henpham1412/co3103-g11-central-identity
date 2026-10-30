@@ -56,6 +56,51 @@ class AuthHttpIntegrationTest {
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final Set<String> testEmails = new HashSet<>();
 
+    @ParameterizedTest
+    @ValueSource(strings = {"unknown", "numericPassword", "booleanName", "duplicate", "trailing", "array"})
+    void rejectsUnexpectedJsonWithoutCommittingRegistration(String scenario) throws Exception {
+        String email = newEmail();
+        String body = registerBody(email, PASSWORD);
+        body = switch (scenario) {
+            case "unknown" -> body.replace("}", ",\"role\":\"ADMIN\"}");
+            case "numericPassword" -> body.replace("\"" + PASSWORD + "\"", "12345678");
+            case "booleanName" -> body.replace("\"Security Test\"", "true");
+            case "duplicate" -> body.replace("}", ",\"password\":\"AnotherPassword\"}");
+            case "trailing" -> body + " {}";
+            case "array" -> "[" + body + "]";
+            default -> throw new IllegalArgumentException(scenario);
+        };
+        assertError(send("POST", REGISTER_PATH, body, "application/json", null), 400, REGISTER_PATH);
+        assertThat(countUsers(email)).isZero();
+    }
+
+    @Test
+    void documentedUnprefixedEndpointsSupportCompleteAuthenticationFlow() throws Exception {
+        String email = newEmail();
+        assertThat(send("POST", "/auth/register", registerBody(email, PASSWORD), "application/json", null)
+                .statusCode()).isEqualTo(201);
+        HttpResponse<String> login = send("POST", "/auth/login", loginBody(email, PASSWORD), "application/json", null);
+        assertThat(login.statusCode()).isEqualTo(200);
+        String token = objectMapper.readTree(login.body()).get("accessToken").asText();
+        String clientId = jwtService.extractClaim(token, claims -> claims.get("clientId", String.class));
+        assertThat(clientId).isEqualTo("central-identity");
+        assertThat(send("GET", "/users/me", null, "application/json", token).statusCode()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", " ", "client name", "tooLong"})
+    void invalidClientContextDoesNotCommitRegistrationOrLogin(String clientId) throws Exception {
+        String value = clientId.equals("tooLong") ? "x".repeat(101) : clientId;
+        String email = newEmail();
+        String registration = registerBody(email, PASSWORD).replace("}", ",\"clientId\":\"" + value + "\"}");
+        assertError(send("POST", REGISTER_PATH, registration, "application/json", null), 400, REGISTER_PATH);
+        assertThat(countUsers(email)).isZero();
+        User user = createUser();
+        String login = loginBody(user.getEmail(), PASSWORD).replace("}", ",\"clientId\":\"" + value + "\"}");
+        assertError(send("POST", LOGIN_PATH, login, "application/json", null), 400, LOGIN_PATH);
+        assertThat(userRepository.findById(user.getUserId()).orElseThrow().getLastLoginAt()).isNull();
+    }
+
     @Test
     void loginTokenCanBeVerifiedWithPublicJwksOverHttp() throws Exception {
         String email = newEmail();
@@ -210,7 +255,7 @@ class AuthHttpIntegrationTest {
         String path = LOGIN_PATH + ";invalid";
         JsonNode error = assertError(send("POST", path, "{}", "application/xml", token), 400, path);
         assertThat(error.get("code").asText()).isEqualTo("INVALID_REQUEST");
-        assertThat(error.get("message").asText()).contains(";");
+        assertThat(error.get("message").asText()).isEqualTo("Request was rejected because its format is invalid");
     }
 
     @Test

@@ -11,6 +11,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.ErrorResponseException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -144,13 +145,26 @@ public class GlobalExceptionHandler {
                         "Requested response media type is not supported", request).code("NOT_ACCEPTABLE").build());
     }
 
-    @ExceptionHandler(NoResourceFoundException.class)
+    @ExceptionHandler({NoResourceFoundException.class, ResourceNotFoundException.class})
     public ResponseEntity<ApiErrorResponse> handleNoResourceFound(
-            NoResourceFoundException exception, HttpServletRequest request) {
+            Exception exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.NOT_FOUND, "Requested resource was not found", request)
                         .code("RESOURCE_NOT_FOUND").build());
+    }
+
+    @ExceptionHandler(ErrorResponseException.class)
+    public ResponseEntity<ApiErrorResponse> handleHttpError(
+            ErrorResponseException exception, HttpServletRequest request) {
+        HttpStatus status = HttpStatus.resolve(exception.getStatusCode().value());
+        if (status == null || !status.isError()) {
+            return handleUnexpectedException(exception, request);
+        }
+        // Framework reasons and ProblemDetail properties may contain internal details.
+        return ResponseEntity.status(status).headers(exception.getHeaders())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(status, status.getReasonPhrase(), request).build());
     }
 
     @ExceptionHandler(Exception.class)

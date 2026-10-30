@@ -187,9 +187,10 @@ class AuthServiceTest {
     }
 
     @Test
-    void registerRecognizesEmailColumnInNestedSqlUniqueViolation() {
+    void registerRecognizesEmailConstraintInNestedSqlUniqueViolation() {
         when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
-        var sql = new SQLException("duplicate key; Detail: Key (email)=(student@example.com) already exists", "23505");
+        var sql = new SQLException("ERROR: duplicate key value violates unique constraint \"users_email_key\"\n"
+                + "Detail: Key (email)=(student@example.com) already exists", "23505");
         var batch = new SQLException("batch failed");
         batch.setNextException(sql);
         when(userRepository.saveAndFlush(any(User.class)))
@@ -566,6 +567,26 @@ class AuthServiceTest {
     private void stubRegistration() {
         when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
         when(userRepository.saveAndFlush(any(User.class))).thenReturn(user);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a", "\u00e9", "\u20ac", "\uD83D\uDE00"})
+    void registerRejectsOversizedPasswordBeforeEncodingOrRepository(String character) {
+        int bytes = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        registerRequest.setPassword(character.repeat(72 / bytes) + "x");
+        assertThrows(IllegalArgumentException.class, () -> authService.register(registerRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, jwtService, jwtProperties);
+    }
+
+    @Test
+    void registerDoesNotMistakeUniqueViolationDetailForEmailConstraint() {
+        var sql = new SQLException("ERROR: duplicate key value violates unique constraint \"users_external_id_key\"\n"
+                + "Detail: Key (external_id)=(Key (email)=attacker@example.com) already exists", "23505");
+        var failure = new DataIntegrityViolationException("insert failed", sql);
+        when(passwordEncoder.encode(PASSWORD)).thenReturn(PASSWORD_HASH);
+        when(userRepository.saveAndFlush(any(User.class))).thenThrow(failure);
+        assertSame(failure, assertThrows(DataIntegrityViolationException.class,
+                () -> authService.register(registerRequest)));
     }
 
     private void stubSuccessfulLogin() {

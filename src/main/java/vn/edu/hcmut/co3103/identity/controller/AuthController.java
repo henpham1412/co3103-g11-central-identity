@@ -16,7 +16,7 @@ import vn.edu.hcmut.co3103.identity.dto.auth.response.RegisterResponse;
 import vn.edu.hcmut.co3103.identity.service.AuthService;
 
 @RestController
-@RequestMapping("/api/v1/auth")
+@RequestMapping({"/auth", "/api/v1/auth"})
 @RequiredArgsConstructor
 public class AuthController {
 

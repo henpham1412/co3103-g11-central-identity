@@ -34,6 +34,8 @@ public class RegisterRequest {
     @Pattern(regexp = "^[^\\p{Cc}]*$", message = "Full name contains invalid characters")
     private String fullName;
 
+    @Size(min = 1, max = 100, message = "Client ID must be between 1 and 100 characters")
+    @Pattern(regexp = "\\S+", message = "Client ID must not contain whitespace")
     private String clientId;
 
     // Jackson can choose the property-based constructor instead of calling setters.

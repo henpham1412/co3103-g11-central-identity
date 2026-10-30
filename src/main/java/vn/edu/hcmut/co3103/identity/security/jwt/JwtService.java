@@ -74,7 +74,7 @@ public class JwtService {
     private static KeyPair loadKeyPair(JwtProperties properties) {
         boolean hasPrivateKey = StringUtils.hasText(properties.getPrivateKey());
         boolean hasPublicKey = StringUtils.hasText(properties.getPublicKey());
-        if (!hasPrivateKey && !hasPublicKey) {
+        if (!hasPrivateKey && !hasPublicKey && properties.isAllowEphemeralKeys()) {
             return Jwts.SIG.RS256.keyPair().build();
         }
         if (!hasPrivateKey || !hasPublicKey) {
@@ -178,10 +178,15 @@ public class JwtService {
         }
         subject = UUID.fromString(subject).toString();
         claims.put("userId", subject);
-        for (String name : new String[]{"email", "role", "fullName"}) {
+        // Direct Central Identity login has a stable client context even without an LMS client.
+        claims.putIfAbsent("clientId", "central-identity");
+        for (String name : new String[]{"email", "role", "fullName", "clientId"}) {
             if (!(claims.get(name) instanceof String value) || !StringUtils.hasText(value)) {
                 throw new IllegalArgumentException("Identity claim " + name + " is required to issue a token");
             }
+        }
+        if (((String) claims.get("clientId")).length() > 100) {
+            throw new IllegalArgumentException("Client ID must not exceed 100 characters");
         }
         Date issuedAt = new Date();
         return Jwts.builder()
@@ -250,10 +255,13 @@ public class JwtService {
             throw new JwtException("JWT key identifier is missing or unknown");
         }
         Claims claims = signedClaims.getPayload();
-        for (String name : new String[]{"sub", "userId", "email", "role", "fullName"}) {
+        for (String name : new String[]{"sub", "userId", "email", "role", "fullName", "clientId"}) {
             if (!(claims.get(name) instanceof String value) || !StringUtils.hasText(value)) {
                 throw new JwtException("Required identity claim is missing or invalid: " + name);
             }
+        }
+        if (((String) claims.get("clientId")).length() > 100) {
+            throw new JwtException("JWT client ID exceeds the supported length");
         }
         String subject = claims.getSubject();
         String userId = claims.get("userId", String.class);

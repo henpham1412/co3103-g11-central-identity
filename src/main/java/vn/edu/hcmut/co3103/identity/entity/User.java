@@ -33,17 +33,17 @@ public class User {
     @Column(name = "user_id", updatable = false, nullable = false)
     private UUID userId;
 
-    @Column(name = "email", nullable = false, unique = true, length = 255)
+    @Column(name = "email", nullable = false, unique = true, length = 254)
     private String email;
 
-    @Column(name = "password_hash", nullable = false, length = 255)
+    @Column(name = "password_hash", nullable = false, columnDefinition = "TEXT")
     private String passwordHash;
 
     @Column(name = "full_name", nullable = false, length = 150)
     private String fullName;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 32)
+    @Column(name = "status", nullable = false, length = 20)
     @Builder.Default
     private UserStatus status = UserStatus.ACTIVE;
 

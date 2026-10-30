@@ -168,10 +168,17 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt-private.pe
 openssl pkey -in jwt-private.pem -pubout -out jwt-public.pem
 ```
 
-Load the file contents into the corresponding environment variables. If neither key is configured,
-the service generates an ephemeral pair at startup for local development. Restarting then invalidates
-existing tokens; configure persistent keys shared by all instances for deployments. Incomplete,
-invalid, weak, or mismatched configured keys prevent startup. Existing HS256 tokens require login again.
+Load the file contents into the corresponding environment variables. Missing, incomplete, invalid,
+weak, or mismatched keys prevent startup. Local development can explicitly opt into generated keys
+with `JWT_ALLOW_EPHEMERAL_KEYS=true` when neither key is configured. Restarting in that mode invalidates
+existing tokens; configure persistent keys shared by all instances for deployments.
+Tests explicitly enable generated keys. Existing HS256 tokens require login again.
+
+Tokens include `sub` (the canonical UUID `user_id`), `userId`, `email`, `role`, `fullName`, and
+`clientId`. The global role is `USER`; LMS roles remain local to each LMS. An omitted `clientId`
+uses `central-identity` for direct login. A supplied client ID is request context, not proof of
+client authentication or an authorization grant, and must be at most 100 characters without whitespace.
+Tokens issued before this contract that omit `clientId` require login again.
 
 `JWT_EXPIRATION_MS` defaults to `86400000` (24 hours), and `JWT_REFRESH_EXPIRATION_MS`
 defaults to `604800000` (7 days). Refresh token issuance is not implemented yet.
@@ -199,7 +206,11 @@ After configuring a reachable local PostgreSQL database and the corresponding Sp
 ./mvnw spring-boot:run
 ```
 
-The application will start on the configured server port. The port and API base path will be documented once the application configuration is finalized.
+The application uses `SERVER_PORT=8080` by default. Registration, login, and current-user APIs
+are available at `/auth/register`, `/auth/login`, and `/users/me`, with compatible aliases under
+`/api/v1`. Request bodies must be JSON objects with the documented fields and string types;
+unknown fields, duplicate keys, trailing values, and implicit number/boolean-to-string conversions
+are rejected before business logic. Passwords require at least 8 characters and at most 72 UTF-8 bytes.
 
 ## 6. Maven Wrapper Configuration
 

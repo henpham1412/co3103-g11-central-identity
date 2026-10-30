@@ -20,8 +20,11 @@ public class JwtProperties {
     /** PKCS#8 PEM private key; configure together with the public key. */
     private String privateKey;
 
-    /** X.509 PEM public key. If both keys are absent, generate an ephemeral RSA pair. */
+    /** X.509 PEM public key. */
     private String publicKey;
+
+    /** Explicit opt-in for local development and tests; deployments require persistent keys. */
+    private boolean allowEphemeralKeys;
 
     @Positive
     private long expirationMs = 86400000L;

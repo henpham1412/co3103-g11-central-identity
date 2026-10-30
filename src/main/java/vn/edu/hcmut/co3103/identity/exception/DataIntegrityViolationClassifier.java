@@ -16,10 +16,9 @@ import java.util.regex.Pattern;
 public final class DataIntegrityViolationClassifier {
 
     private static final String EMAIL_CONSTRAINT = "users_email_key";
-    private static final Pattern EMAIL_CONSTRAINT_MESSAGE = Pattern.compile(
-            "(?:constraint|violates)\\s+[\"']?users_email_key\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern EMAIL_KEY_MESSAGE = Pattern.compile(
-            "\\bKey\\s*\\(\\s*email\\s*\\)\\s*=", Pattern.CASE_INSENSITIVE);
+    private static final Pattern UNIQUE_CONSTRAINT_MESSAGE = Pattern.compile(
+            "^(?:ERROR:\\s*)?duplicate key(?: value)? violates (?:unique constraint )?"
+                    + "[\"']?([a-zA-Z0-9_]+)[\"']?(?=\\s|;|$)", Pattern.CASE_INSENSITIVE);
     private static final Pattern UNIQUE_MESSAGE = Pattern.compile(
             "\\bduplicate key\\b|\\bunique constraint\\b", Pattern.CASE_INSENSITIVE);
 
@@ -36,9 +35,18 @@ public final class DataIntegrityViolationClassifier {
                 return EMAIL_CONSTRAINT.equalsIgnoreCase(violation.getConstraintName());
             }
         }
-        return causes.stream().anyMatch(cause -> cause.getMessage() != null
-                && (EMAIL_CONSTRAINT_MESSAGE.matcher(cause.getMessage()).find()
-                || EMAIL_KEY_MESSAGE.matcher(cause.getMessage()).find()));
+        // A driver's detail section can contain arbitrary user values. Read only the
+        // constraint in the error header, never a column name or an outer wrapper's text.
+        List<Throwable> sqlCauses = causes.stream().filter(SQLException.class::isInstance).toList();
+        for (Throwable cause : sqlCauses.isEmpty() ? causes : sqlCauses) {
+            if (cause.getMessage() != null) {
+                var match = UNIQUE_CONSTRAINT_MESSAGE.matcher(cause.getMessage());
+                if (match.find()) {
+                    return EMAIL_CONSTRAINT.equalsIgnoreCase(match.group(1));
+                }
+            }
+        }
+        return false;
     }
 
     public static boolean isUniqueViolation(Throwable exception) {

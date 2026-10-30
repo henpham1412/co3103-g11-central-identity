@@ -4,6 +4,7 @@ import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -21,11 +22,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AuthDtoTest {
 
     private static Validator validator;
+    private static ValidatorFactory factory;
 
     @BeforeAll
     static void setUp() {
-        ValidatorFactory factory = Validation.buildDefaultValidatorFactory();
+        factory = Validation.buildDefaultValidatorFactory();
         validator = factory.getValidator();
+    }
+
+    @AfterAll
+    static void closeValidatorFactory() {
+        factory.close();
     }
 
     @Test

@@ -26,13 +26,13 @@ import java.util.List;
 public class LmsClient {
 
     @Id
-    @Column(name = "client_id", length = 64, nullable = false)
+    @Column(name = "client_id", length = 100, nullable = false)
     private String clientId;
 
-    @Column(name = "client_secret_hash", length = 255)
+    @Column(name = "client_secret_hash", columnDefinition = "TEXT")
     private String clientSecretHash;
 
-    @Column(name = "client_name", length = 255, nullable = false)
+    @Column(name = "client_name", length = 200, nullable = false)
     private String clientName;
 
     @JdbcTypeCode(SqlTypes.ARRAY)

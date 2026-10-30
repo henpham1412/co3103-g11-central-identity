@@ -410,6 +410,7 @@ class SecurityConfigTest {
         String token = Jwts.builder().header().keyId((String) jwtService.getJwks().get("keys").getFirst().get("kid"))
                 .and().issuer(jwtProperties.getIssuer()).subject(subject).claim("userId", subject)
                 .claim("email", EMAIL).claim("role", "USER").claim("fullName", user.getFullName())
+                .claim("clientId", "lms-client")
                 .expiration(Date.from(Instant.now().plusSeconds(60)))
                 .signWith(JwtTestKeys.KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
                 .compact();
@@ -436,7 +437,7 @@ class SecurityConfigTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"sub", "userId", "email", "role", "fullName"})
+    @ValueSource(strings = {"sub", "userId", "email", "role", "fullName", "clientId"})
     void rejectsMissingIdentityClaimBeforeDatabaseLookup(String claim) throws Exception {
         var claims = new java.util.HashMap<>(jwtService.extractClaim(jwtService.generateToken(user), value -> value));
         claims.remove(claim);

@@ -191,6 +191,11 @@ class GlobalExceptionHandlerTest {
 
     static Stream<Arguments> handledFailures() {
         return Stream.of(
+                Arguments.of(new ResourceNotFoundException("Sensitive missing database record"),
+                        404, "Not Found", "Requested resource was not found"),
+                Arguments.of(new org.springframework.web.server.ResponseStatusException(
+                                org.springframework.http.HttpStatus.UNPROCESSABLE_CONTENT, "Sensitive business details"),
+                        422, "Unprocessable Content", "Unprocessable Content"),
                 Arguments.of(new DuplicateEmailException("Email already exists"), 409, "Conflict", "Email already exists"),
                 Arguments.of(new InvalidCredentialsException("Invalid email or password"),
                         401, "Unauthorized", "Invalid email or password"),

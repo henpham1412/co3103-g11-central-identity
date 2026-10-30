@@ -9,7 +9,7 @@ import vn.edu.hcmut.co3103.identity.dto.user.response.CurrentUserResponse;
 import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 
 @RestController
-@RequestMapping("/api/v1/users")
+@RequestMapping({"/users", "/api/v1/users"})
 public class CurrentUserController {
 
     @GetMapping(value = "/me", produces = MediaType.APPLICATION_JSON_VALUE)

@@ -11,6 +11,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest;
+import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
+import vn.edu.hcmut.co3103.identity.exception.DuplicateEmailException;
 import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.exception.AccountLockedException;
 import vn.edu.hcmut.co3103.identity.exception.InvalidCredentialsException;
@@ -69,6 +71,45 @@ class AuthServiceConcurrencyTest {
 
             assertEquals(LockModeType.PESSIMISTIC_WRITE, entityManager.getLockMode(lockedUser));
         });
+    }
+
+    @Test
+    void concurrentRegistrationsCreateExactlyOneAccountAndReportOnlyEmailConflicts() throws Exception {
+        userRepository.findByEmail(email).ifPresent(userRepository::delete);
+        int requestCount = 4;
+        CountDownLatch ready = new CountDownLatch(requestCount);
+        CountDownLatch start = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(requestCount);
+        List<Future<Boolean>> results = new ArrayList<>();
+        try {
+            for (int i = 0; i < requestCount; i++) {
+                results.add(executor.submit(() -> {
+                    ready.countDown();
+                    assertTrue(start.await(10, TimeUnit.SECONDS));
+                    try {
+                        authService.register(RegisterRequest.builder().email(email)
+                                .password("CorrectPassword123!").fullName("Concurrent Registration").build());
+                        return true;
+                    } catch (DuplicateEmailException exception) {
+                        return false;
+                    }
+                }));
+            }
+            assertTrue(ready.await(10, TimeUnit.SECONDS));
+            start.countDown();
+            int successes = 0;
+            for (Future<Boolean> result : results) {
+                if (result.get(20, TimeUnit.SECONDS)) {
+                    successes++;
+                }
+            }
+            assertEquals(1, successes);
+            assertTrue(userRepository.findByEmail(email).isPresent());
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
     }
 
     @Test

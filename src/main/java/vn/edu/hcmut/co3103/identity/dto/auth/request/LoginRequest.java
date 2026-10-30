@@ -3,6 +3,7 @@ package vn.edu.hcmut.co3103.identity.dto.auth.request;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Builder;
 import lombok.Getter;
@@ -27,6 +28,8 @@ public class LoginRequest {
     @Utf8ByteLength(max = 72, message = "Password must not exceed 72 bytes")
     private String password;
 
+    @Size(min = 1, max = 100, message = "Client ID must be between 1 and 100 characters")
+    @Pattern(regexp = "\\S+", message = "Client ID must not contain whitespace")
     private String clientId;
 
     // Keep normalization identical for constructor- and setter-based JSON binding.

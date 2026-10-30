@@ -37,19 +37,19 @@ public class UserProfile {
     @JoinColumn(name = "user_id")
     private User user;
 
-    @Column(name = "avatar_url", length = 512)
+    @Column(name = "avatar_url", columnDefinition = "TEXT")
     private String avatarUrl;
 
     @Column(name = "bio", columnDefinition = "TEXT")
     private String bio;
 
-    @Column(name = "phone_number", length = 32)
+    @Column(name = "phone_number", length = 30)
     private String phoneNumber;
 
     @Column(name = "date_of_birth")
     private LocalDate dateOfBirth;
 
-    @Column(name = "locale", length = 16)
+    @Column(name = "locale", length = 20)
     @Builder.Default
     private String locale = "vi";
 

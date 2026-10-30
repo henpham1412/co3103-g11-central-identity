@@ -42,6 +42,11 @@ public class AuthService {
 
     @Transactional(readOnly = false)
     public RegisterResponse register(RegisterRequest request) {
+        String password = request.getPassword();
+        if (password == null || password.isBlank() || password.length() < 8
+                || password.getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new IllegalArgumentException("Password does not meet the password policy");
+        }
         String email = request.getEmail().trim().toLowerCase(Locale.ROOT);
         if (userRepository.existsByEmail(email)) {
             throw new DuplicateEmailException("Email already exists: " + email);
