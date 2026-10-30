@@ -12,6 +12,7 @@ public final class IdentityUserDetails extends org.springframework.security.core
 
     private final UUID userId;
     private final String fullName;
+    private final UserStatus status;
 
     public IdentityUserDetails(User user) {
         super(user.getEmail(), user.getPasswordHash(), user.getStatus() == UserStatus.ACTIVE,
@@ -19,6 +20,7 @@ public final class IdentityUserDetails extends org.springframework.security.core
                 List.of());
         this.userId = user.getUserId();
         this.fullName = user.getFullName();
+        this.status = user.getStatus();
     }
 
     public UUID getUserId() {
@@ -27,5 +29,9 @@ public final class IdentityUserDetails extends org.springframework.security.core
 
     public String getFullName() {
         return fullName;
+    }
+
+    public UserStatus getStatus() {
+        return status;
     }
 }
