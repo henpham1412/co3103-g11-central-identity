@@ -117,13 +117,42 @@ On the first execution, Maven Wrapper may download the configured Maven distribu
 
 This verifies that the application can be compiled and packaged without executing tests. Run the test suite once the required local configuration and tests are ready.
 
-### 5.4 Configure the Database
+### 5.4 Configure the Local Environment
 
-The service uses PostgreSQL. Each developer should use a local development database rather than relying on another developer's local database.
+Create a local PostgreSQL database named `central_identity_dev`, for example with
+`createdb -U postgres central_identity_dev`. Flyway applies the schema migrations at startup.
 
-The exact database name, connection settings, and schema migration workflow will be documented after the team finalizes the local database setup.
+Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell, or
+`cp .env.example .env` in Bash). Set `DB_PASSWORD` to your local PostgreSQL password;
+adjust `DB_URL` and `DB_USERNAME` if needed. The `.env` file is ignored by Git.
+Use single quotes around values containing shell-special characters.
 
-Do not commit local database passwords, signing keys, or other secrets to the repository. Keep machine-specific configuration separate from shared project files.
+Spring Boot does **not** load `.env` automatically. Load its values into the same shell
+used to start Maven, or configure them as environment variables in your IDE's run configuration.
+The commands below support the template's single-quoted PEM values and preserve literal `\n` sequences.
+
+**Windows PowerShell**
+
+```powershell
+Get-Content .env | ForEach-Object {
+    if ($_ -match '^([A-Z_][A-Z0-9_]*)=(.*)$') {
+        [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2].Trim("'"), 'Process')
+    }
+}
+```
+
+**macOS / Linux (Bash)**
+
+```bash
+set -a
+source ./.env
+set +a
+```
+
+The template includes a fixed, matching **RSA 2048-bit development keypair**. Keep both keys
+configured across local restarts so previously issued LMS access tokens remain verifiable until
+they expire. These keys are public sample data: **never use them in production**. Use a separate,
+privately managed keypair for deployments. Do not commit real passwords or signing keys.
 
 JWTs are signed with **RS256** and include `iss` and a `kid` header. `JWT_ISSUER` defaults to
 `http://localhost:8080`. Public verification keys are available without authentication at
@@ -132,7 +161,7 @@ and validate the configured issuer and expiration.
 
 Set **both** `JWT_PRIVATE_KEY` (PKCS#8 PEM, `BEGIN PRIVATE KEY`) and `JWT_PUBLIC_KEY`
 (X.509 PEM, `BEGIN PUBLIC KEY`) to a matching RSA pair of at least 2048 bits. PEM values may
-contain real newlines or literal `\n` sequences. For example, generate keys outside the repository:
+contain real newlines or literal `\n` sequences. To create a separate keypair, generate keys outside the repository:
 
 ```bash
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt-private.pem
@@ -150,7 +179,8 @@ defaults to `604800000` (7 days). Refresh token issuance is not implemented yet.
 Run the JWT unit tests without a database or an environment signing key:
 
 ```powershell
-.\mvnw.cmd test '-Dtest=JwtServiceTest' '-Dmaven.compiler.release=24'
+.\mvnw.cmd test-compile
+.\mvnw.cmd test '-Dtest=JwtServiceTest'
 ```
 
 ### 5.5 Run the Application
