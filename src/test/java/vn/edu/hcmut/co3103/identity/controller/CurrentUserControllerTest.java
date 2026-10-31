@@ -52,6 +52,8 @@ class CurrentUserControllerTest {
     private JwtService jwtService;
     @MockitoBean
     private UserRepository userRepository;
+    @MockitoBean
+    private vn.edu.hcmut.co3103.identity.service.UserService userService;
 
     private User user;
 
@@ -157,5 +159,105 @@ class CurrentUserControllerTest {
         mockMvc.perform(get(PATH).accept(MediaType.APPLICATION_XML)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
                 .andExpect(status().isNotAcceptable());
+    }
+
+    @Test
+    void currentUserProfileReturnsCompleteUserProfile() throws Exception {
+        String token = jwtService.generateToken(user);
+        when(userRepository.findById(user.getUserId())).thenReturn(Optional.of(user));
+
+        vn.edu.hcmut.co3103.identity.dto.user.response.UserProfileResponse profileResponse =
+                new vn.edu.hcmut.co3103.identity.dto.user.response.UserProfileResponse(
+                        "https://example.com/avatar.png",
+                        "Computer Science student",
+                        "+84901234567",
+                        java.time.LocalDate.of(2000, 1, 1),
+                        "vi-VN",
+                        "Asia/Ho_Chi_Minh"
+                );
+        vn.edu.hcmut.co3103.identity.dto.user.response.CurrentUserProfileResponse fullResponse =
+                new vn.edu.hcmut.co3103.identity.dto.user.response.CurrentUserProfileResponse(
+                        user.getUserId(),
+                        user.getEmail(),
+                        user.getFullName(),
+                        user.getStatus(),
+                        profileResponse
+                );
+
+        when(userService.getCurrentUserProfile(user.getUserId())).thenReturn(fullResponse);
+
+        mockMvc.perform(get("/api/v1/users/me/profile").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.user_id").value(user.getUserId().toString()))
+                .andExpect(jsonPath("$.email").value(user.getEmail()))
+                .andExpect(jsonPath("$.full_name").value(user.getFullName()))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.profile.avatar_url").value("https://example.com/avatar.png"))
+                .andExpect(jsonPath("$.profile.bio").value("Computer Science student"))
+                .andExpect(jsonPath("$.profile.phone_number").value("+84901234567"))
+                .andExpect(jsonPath("$.profile.date_of_birth").value("2000-01-01"))
+                .andExpect(jsonPath("$.profile.locale").value("vi-VN"))
+                .andExpect(jsonPath("$.profile.timezone").value("Asia/Ho_Chi_Minh"));
+
+        verify(userService).getCurrentUserProfile(user.getUserId());
+    }
+
+    @Test
+    void updateProfileUpdatesFieldsSuccessfully() throws Exception {
+        String token = jwtService.generateToken(user);
+        when(userRepository.findById(user.getUserId())).thenReturn(Optional.of(user));
+
+        Instant now = Instant.parse("2026-10-14T08:30:00Z");
+        vn.edu.hcmut.co3103.identity.dto.user.response.UpdateProfileResponse updateResponse =
+                new vn.edu.hcmut.co3103.identity.dto.user.response.UpdateProfileResponse("Profile updated successfully", now);
+        when(userService.updateProfile(org.mockito.ArgumentMatchers.eq(user.getUserId()), org.mockito.ArgumentMatchers.any(vn.edu.hcmut.co3103.identity.dto.user.request.UpdateProfileRequest.class)))
+                .thenReturn(updateResponse);
+
+        String payload = """
+                {
+                  "full_name": "Nguyen Van A Updated",
+                  "avatar_url": "https://example.com/new.png",
+                  "bio": "New bio",
+                  "phone_number": "+84912345678",
+                  "date_of_birth": "1995-05-20",
+                  "locale": "vi",
+                  "timezone": "Asia/Ho_Chi_Minh"
+                }
+                """;
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/users/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.message").value("Profile updated successfully"))
+                .andExpect(jsonPath("$.updated_at").value("2026-10-14T08:30:00Z"));
+
+        verify(userService).updateProfile(org.mockito.ArgumentMatchers.eq(user.getUserId()), org.mockito.ArgumentMatchers.any(vn.edu.hcmut.co3103.identity.dto.user.request.UpdateProfileRequest.class));
+    }
+
+    @Test
+    void updateProfileRejectsInvalidFieldsWithValidationError() throws Exception {
+        String token = jwtService.generateToken(user);
+        when(userRepository.findById(user.getUserId())).thenReturn(Optional.of(user));
+
+        String payload = """
+                {
+                  "avatar_url": "invalid-url",
+                  "date_of_birth": "2099-01-01"
+                }
+                """;
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/users/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+
+        verifyNoInteractions(userService);
     }
 }
