@@ -233,18 +233,34 @@ the nested `profile`, or `profile: null` when no optional profile row exists. Th
 alias of this response; both routes also support the `/api/v1` prefix.
 `PATCH /users/me` preserves omitted fields. Explicit `null` clears `avatar_url`, `bio`,
 `phone_number`, `date_of_birth`, `locale`, or `timezone`; `full_name: null` preserves the required name.
+Stored profile text rejects U+0000. `date_of_birth` must be between `1900-01-01` and today,
+inclusive. These field constraints return HTTP 400 / `VALIDATION_ERROR` with field details.
 
 Password recovery is available at `POST /auth/forgot-password` and `POST /auth/reset-password`,
 including their `/api/v1/auth` aliases. Both routes are public. Forgot-password accepts `email`
 and always acknowledges valid input with the same message, regardless of account existence or status.
 Account lookup, token persistence, and reset-link delivery run asynchronously so account-dependent work
 does not delay the HTTP acknowledgement. The current worker queue is in memory; queued requests
-are not durable across a process restart. The current delivery adapter logs the recipient and usable
-reset link after the token transaction commits. Configure `app.reset-password.base-url`
+are not durable across a process restart. Spring Mail sends the reset email after the token
+transaction commits. Configure `app.reset-password.base-url`
 (`APP_RESET_PASSWORD_BASE_URL` in the environment); it defaults to
 `http://localhost:3000/reset-password`. Links have the form `<base-url>?token=<token>`.
-This is log-based delivery, not an SMTP transport: restrict access to these logs because the link
-is a bearer credential. An email transport can replace the notification service's `deliver` method.
+Set `MAIL_USERNAME` to the sending Gmail address and `MAIL_PASSWORD` to its app password.
+`spring.mail` in `application.yaml` defaults to `smtp.gmail.com:587`, SMTP authentication,
+required STARTTLS, certificate hostname verification, and five-second connection/read/write timeouts.
+`MAIL_HOST` and `MAIL_PORT` can select another SMTP provider; Spring's `spring.mail` properties
+can override the remaining settings. SMTP debug output is disabled. Do not commit mail credentials.
+Delivery makes at most three attempts with the same link. If all fail, the worker logs only the
+recipient, attempt count, and exception type, then stops. The HTTP acknowledgement stays generic;
+the persisted token expires normally and the user can request another email. A transport failure
+after SMTP acceptance can cause a duplicate email. Tokens, links, passwords, message bodies, and
+mail exception contents are never logged by the notification service.
+
+Tests activate the `test` profile and replace SMTP with `InMemoryMailSender`, a thread-safe mailbox
+under `src/test/java` that is excluded from the production JAR. Tests and audit probes can autowire
+it and inspect `getMessages()` for recipient, sender, subject, and reset link, then `clear()` it.
+No external SMTP credentials or network calls are needed. Recovery HTTP tests extract their tokens
+from this mailbox and verify commit/rollback behavior, delivery failures, and credential log hygiene.
 
 Only ACTIVE users receive a token. Tokens contain 32 secure random bytes encoded as base64url,
 expire after 15 minutes, and are stored only as SHA-256 hashes. Reset-password accepts `token`

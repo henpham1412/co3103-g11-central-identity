@@ -164,6 +164,33 @@ class ProfileRecoveryDtoTest {
                 .containsExactly("dateOfBirth");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"bio", "full_name", "phone_number", "locale", "timezone"})
+    void rejectsNullCharactersInStoredProfileText(String field) {
+        var request = mapper.readValue(mapper.writeValueAsString(java.util.Map.of(field, "bad\0value")),
+                UpdateProfileRequest.class);
+        assertThat(validator.validate(request)).hasSize(1);
+        assertThat(validator.validate(mapper.readValue(
+                mapper.writeValueAsString(java.util.Map.of(field, "Nguyễn\nAn")), UpdateProfileRequest.class)))
+                .isEmpty();
+        assertThat(validator.validate(mapper.readValue("{\"" + field + "\":null}", UpdateProfileRequest.class)))
+                .isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"1899-12-31", "0000-01-01", "-5000-01-01", "-999999998-01-01"})
+    void rejectsBirthDatesBeforeStorageSafeMinimum(String date) {
+        var request = UpdateProfileRequest.builder().dateOfBirth(LocalDate.parse(date)).build();
+        assertThat(validator.validate(request)).extracting(violation -> violation.getPropertyPath().toString())
+                .containsExactly("dateOfBirth");
+    }
+
+    @Test
+    void acceptsMinimumBirthDate() {
+        assertThat(validator.validate(UpdateProfileRequest.builder()
+                .dateOfBirth(LocalDate.of(1900, 1, 1)).build())).isEmpty();
+    }
+
     @Test
     void serializesCurrentProfileWithDocumentedFieldsAndLegacyIdentityAliases() {
         UUID userId = UUID.randomUUID();

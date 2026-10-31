@@ -14,6 +14,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mail.MailSendException;
+import org.springframework.mail.SimpleMailMessage;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
@@ -22,6 +24,7 @@ import vn.edu.hcmut.co3103.identity.entity.PasswordReset;
 import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.entity.UserStatus;
 import vn.edu.hcmut.co3103.identity.service.PasswordResetNotificationService;
+import vn.edu.hcmut.co3103.identity.support.InMemoryMailSender;
 import vn.edu.hcmut.co3103.identity.repository.PasswordResetRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 
@@ -60,6 +63,7 @@ class PasswordResetHttpIntegrationTest {
     @MockitoSpyBean private UserRepository users;
     @MockitoSpyBean private PasswordResetRepository resets;
     @MockitoSpyBean private PasswordResetNotificationService notifications;
+    @MockitoSpyBean private InMemoryMailSender mailbox;
     @Autowired private PasswordEncoder encoder;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private ObjectMapper mapper;
@@ -71,6 +75,7 @@ class PasswordResetHttpIntegrationTest {
     @AfterEach
     void cleanUp() {
         awaitIdle();
+        mailbox.clear();
         for (UUID id : userIds) {
             resets.deleteByUserId(id);
             users.deleteById(id);
@@ -83,12 +88,7 @@ class PasswordResetHttpIntegrationTest {
         User user = createUser(UserStatus.ACTIVE);
         var acknowledgement = post(prefix + "/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
         assertThat(acknowledgement.statusCode()).isEqualTo(200);
-        String deliveryPrefix = "Password reset delivery to " + user.getEmail() + ": ";
-        await().atMost(Duration.ofSeconds(10)).until(() -> output.getAll().contains(deliveryPrefix));
-        awaitIdle();
-        String link = output.getAll().lines().filter(line -> line.contains(deliveryPrefix))
-                .map(line -> line.substring(line.indexOf(deliveryPrefix) + deliveryPrefix.length()))
-                .findFirst().orElseThrow();
+        String link = deliveredLink(user);
         assertThat(link).startsWith("https://frontend.example/reset-password?token=");
         String token = URI.create(link).getRawQuery().substring("token=".length());
         assertThat(token).matches("[A-Za-z0-9_-]{43}");
@@ -114,7 +114,7 @@ class PasswordResetHttpIntegrationTest {
         assertThat(users.findById(user.getUserId()).orElseThrow().getPasswordHash()).isEqualTo(persisted.getPasswordHash());
         assertThat(post(prefix + "/login", loginBody(user, OLD_PASSWORD)).statusCode()).isEqualTo(401);
         assertThat(post(prefix + "/login", loginBody(user, NEW_PASSWORD)).statusCode()).isEqualTo(200);
-        assertThat(output.getAll()).contains(deliveryPrefix + link).doesNotContain(OLD_PASSWORD, NEW_PASSWORD);
+        assertThat(output.getAll()).doesNotContain(token, link, OLD_PASSWORD, NEW_PASSWORD);
     }
 
     @ParameterizedTest
@@ -132,6 +132,8 @@ class PasswordResetHttpIntegrationTest {
         awaitIdle();
         var issued = resets.findByUserIdOrderByCreatedAtDesc(user.getUserId());
         assertThat(issued).hasSize(status == UserStatus.ACTIVE ? 1 : 0);
+        assertThat(mailbox.getMessages()).hasSize(status == UserStatus.ACTIVE ? 1 : 0);
+        assertThat(mailbox.getMessages()).allSatisfy(message -> assertThat(message.getTo()).containsExactly(user.getEmail()));
         if (status != UserStatus.ACTIVE) verifyNoInteractions(notifications);
     }
 
@@ -212,16 +214,47 @@ class PasswordResetHttpIntegrationTest {
         }
     }
 
-    @Test
-    void deliveryFailureDoesNotRevealAccountExistence() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"/auth", "/api/v1/auth"})
+    void deliveryFailureDoesNotRevealAccountExistenceOrLogSecrets(String prefix, CapturedOutput output) throws Exception {
         User user = createUser(UserStatus.ACTIVE);
-        doThrow(new IllegalStateException("simulated delivery failure")).when(notifications).send(anyString(), anyString());
-        var response = post("/auth/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
+        doAnswer(invocation -> {
+            SimpleMailMessage message = invocation.getArgument(0);
+            throw new MailSendException("simulated delivery failure containing body: " + message.getText());
+        }).when(mailbox).send(any(SimpleMailMessage.class));
+        var response = post(prefix + "/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(mapper.readTree(response.body()).get("message").asText()).isEqualTo(FORGOT_MESSAGE);
         verify(notifications, timeout(10000)).send(eq(user.getEmail()), anyString());
         awaitIdle();
+        assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
+        assertThat(mailbox.getMessages()).isEmpty();
+        verify(mailbox, times(3)).send(any(SimpleMailMessage.class));
+        var token = ArgumentCaptor.forClass(String.class);
+        verify(notifications).send(eq(user.getEmail()), token.capture());
+        assertThat(output.getAll()).contains("delivery failed for " + user.getEmail())
+                .doesNotContain(token.getValue(), "https://frontend.example/reset-password?token=");
+        var unknown = post(prefix + "/forgot-password", "{\"email\":\"unknown@example.com\"}");
+        assertThat(unknown.statusCode()).isEqualTo(response.statusCode());
+        assertThat(unknown.body()).isEqualTo(response.body());
+        verify(users, timeout(10000)).findByEmail("unknown@example.com");
+    }
+
+    @Test
+    void rolledBackIssuanceDoesNotDeliverOrLogCredentials(CapturedOutput output) throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        doAnswer(invocation -> {
+            invocation.callRealMethod();
+            throw new IllegalStateException("simulated failure after registering delivery");
+        }).when(notifications).send(eq(user.getEmail()), anyString());
+        var response = post("/auth/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
+        assertThat(response.statusCode()).isEqualTo(200);
+        var token = ArgumentCaptor.forClass(String.class);
+        verify(notifications, timeout(10000)).send(eq(user.getEmail()), token.capture());
+        awaitIdle();
         assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).isEmpty();
+        assertThat(mailbox.getMessages()).isEmpty();
+        assertThat(output.getAll()).doesNotContain(token.getValue(), "https://frontend.example/reset-password?token=");
     }
 
     @ParameterizedTest
@@ -260,11 +293,22 @@ class PasswordResetHttpIntegrationTest {
         var response = post(prefix + "/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
         assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
         assertThat(mapper.readTree(response.body()).get("message").asText()).isEqualTo(FORGOT_MESSAGE);
-        var token = ArgumentCaptor.forClass(String.class);
-        verify(notifications, timeout(10000)).send(eq(user.getEmail()), token.capture());
+        String token = URI.create(deliveredLink(user)).getRawQuery().substring("token=".length());
+        assertThat(resets.findByTokenHash(hash(token))).isPresent();
+        return token;
+    }
+
+    private String deliveredLink(User user) {
+        await().atMost(Duration.ofSeconds(10)).until(() -> !mailbox.getMessages().isEmpty());
         awaitIdle();
-        assertThat(resets.findByTokenHash(hash(token.getValue()))).isPresent();
-        return token.getValue();
+        assertThat(mailbox.getMessages()).singleElement().satisfies(message -> {
+            assertThat(message.getFrom()).isEqualTo("identity@example.com");
+            assertThat(message.getTo()).containsExactly(user.getEmail());
+            assertThat(message.getSubject()).isEqualTo("Reset your Central Identity password");
+        });
+        return mailbox.getMessages().getFirst().getText().lines()
+                .filter(line -> line.startsWith("https://frontend.example/reset-password?token="))
+                .findFirst().orElseThrow();
     }
 
     private void awaitIdle() {

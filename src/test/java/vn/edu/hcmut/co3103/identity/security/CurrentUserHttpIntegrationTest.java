@@ -4,12 +4,15 @@ import io.jsonwebtoken.Jwts;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import tools.jackson.databind.JsonNode;
@@ -27,8 +30,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -47,6 +53,8 @@ class CurrentUserHttpIntegrationTest {
     private JwtService jwtService;
     @Autowired
     private ObjectMapper objectMapper;
+    @Autowired
+    private JdbcTemplate jdbc;
 
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final String email = "current-user-" + UUID.randomUUID() + "@example.com";
@@ -201,6 +209,56 @@ class CurrentUserHttpIntegrationTest {
             assertThat(error.get("code").asText()).isEqualTo("VALIDATION_ERROR");
             assertThat(error.get("validation_errors").has("full_name")).isTrue();
             assertThat(objectMapper.readTree(send(path, null, token).body())).isEqualTo(before);
+        }
+    }
+
+    static Stream<Arguments> storageBoundaryCases() {
+        return Stream.of("/users/me", "/api/v1/users/me").flatMap(path ->
+                Stream.concat(
+                        Stream.of("bio", "full_name", "phone_number", "locale", "timezone")
+                                .map(field -> Arguments.of(path, field, "bad\0value")),
+                        Stream.of("1899-12-31", "0000-01-01", "-5000-01-01", "-999999998-01-01",
+                                        LocalDate.now().plusDays(1).toString())
+                                .map(date -> Arguments.of(path, "date_of_birth", date))));
+    }
+
+    @ParameterizedTest
+    @MethodSource("storageBoundaryCases")
+    void storageBoundariesReturnValidationErrorsWithoutMutatingRows(String path, String field, String value) throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
+                .passwordHash("unused-test-hash").build());
+        String token = jwtService.generateToken(user);
+        assertThat(patch(path, """
+                {"bio":"Original bio","phone_number":"123","locale":"vi","timezone":"Asia/Ho_Chi_Minh",
+                 "date_of_birth":"2000-01-02"}
+                """, token).statusCode()).isEqualTo(200);
+        var userBefore = jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId());
+        var profileBefore = jdbc.queryForMap("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId());
+        var body = new HashMap<String, String>();
+        body.put("full_name", "Must not persist");
+        body.put("bio", "Must not persist");
+        body.put(field, value);
+        var response = patch(path, objectMapper.writeValueAsString(body), token);
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+        JsonNode error = objectMapper.readTree(response.body());
+        assertThat(error.get("status").asInt()).isEqualTo(400);
+        assertThat(error.get("code").asText()).isEqualTo("VALIDATION_ERROR");
+        assertThat(error.get("validation_errors").has(field)).isTrue();
+        assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(userBefore);
+        assertThat(jdbc.queryForMap("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId())).isEqualTo(profileBefore);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/users/me", "/api/v1/users/me"})
+    void acceptsBothBirthDateBoundaries(String path) throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
+                .passwordHash("unused-test-hash").build());
+        String token = jwtService.generateToken(user);
+        for (String date : new String[]{"1900-01-01", LocalDate.now().toString()}) {
+            var response = patch(path, "{\"date_of_birth\":\"" + date + "\"}", token);
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            assertThat(userProfileRepository.findById(user.getUserId()).orElseThrow().getDateOfBirth())
+                    .isEqualTo(LocalDate.parse(date));
         }
     }
 
