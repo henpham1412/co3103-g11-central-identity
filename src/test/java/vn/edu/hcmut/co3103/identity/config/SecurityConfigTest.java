@@ -194,7 +194,7 @@ class SecurityConfigTest {
     @ParameterizedTest
     @ValueSource(strings = {"http://localhost:3000", "http://localhost:5173"})
     void permitsCorsPreflightWithoutAuthentication(String origin) throws Exception {
-        for (String method : new String[]{"GET", "POST", "PUT", "DELETE", "OPTIONS"}) {
+        for (String method : new String[]{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}) {
             mockMvc.perform(options("/api/v1/users/me")
                             .header(HttpHeaders.ORIGIN, origin)
                             .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, method)
@@ -203,7 +203,7 @@ class SecurityConfigTest {
                     .andExpect(status().isOk())
                     .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, origin))
                     .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS,
-                            "GET,POST,PUT,DELETE,OPTIONS"))
+                            "GET,POST,PUT,PATCH,DELETE,OPTIONS"))
                     .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS,
                             "Authorization, Content-Type, X-Request-Id"))
                     .andExpect(content().string(""));
@@ -213,7 +213,7 @@ class SecurityConfigTest {
     @ParameterizedTest
     @CsvSource({
             "https://untrusted.example, POST",
-            "http://localhost:3000, PATCH"
+            "http://localhost:3000, TRACE"
     })
     void rejectsCorsPreflightForDisallowedOriginsOrMethods(String origin, String method) throws Exception {
         mockMvc.perform(options("/api/v1/users/me")

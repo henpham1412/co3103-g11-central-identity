@@ -31,7 +31,8 @@ public class UpdateProfileRequest {
 
     @JsonProperty("full_name")
     @Size(max = 150, message = "Full name must not exceed 150 characters")
-    @Pattern(regexp = "(?s).*\\S.*", message = "Full name must not be blank")
+    // javaWhitespace delegates to Character.isWhitespace, matching String.isBlank().
+    @Pattern(regexp = "(?s).*\\P{javaWhitespace}.*", message = "Full name must not be blank")
     private String fullName;
 
     @JsonProperty("avatar_url")

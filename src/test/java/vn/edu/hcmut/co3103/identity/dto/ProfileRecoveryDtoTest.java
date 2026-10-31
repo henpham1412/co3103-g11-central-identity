@@ -136,9 +136,17 @@ class ProfileRecoveryDtoTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"", "   ", "\t\n"})
+    @ValueSource(strings = {"", "   ", "\t\n", "\u2003", "\u3000", " \u2003\t\u3000\n"})
     void rejectsBlankFullNameWhenSupplied(String fullName) {
-        assertThat(validator.validate(UpdateProfileRequest.builder().fullName(fullName).build())).isNotEmpty();
+        assertThat(validator.validate(UpdateProfileRequest.builder().fullName(fullName).build()))
+                .extracting(violation -> violation.getPropertyPath().toString()).containsExactly("fullName");
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.NullSource
+    @ValueSource(strings = {"Nguyễn Văn An", "\u2003Nguyễn Văn An\u3000"})
+    void acceptsNullAndNonblankUnicodeFullNames(String fullName) {
+        assertThat(validator.validate(UpdateProfileRequest.builder().fullName(fullName).build())).isEmpty();
     }
 
     @ParameterizedTest

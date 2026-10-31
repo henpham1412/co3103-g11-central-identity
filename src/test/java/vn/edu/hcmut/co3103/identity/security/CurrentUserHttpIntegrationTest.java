@@ -3,6 +3,9 @@ package vn.edu.hcmut.co3103.identity.security;
 import io.jsonwebtoken.Jwts;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -154,6 +157,51 @@ class CurrentUserHttpIntegrationTest {
         assertUnauthorized(send(PATH, null, token));
         userRepository.deleteById(user.getUserId());
         assertUnauthorized(send(PATH, null, token));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"/users/me,http://localhost:3000", "/users/me,http://localhost:5173",
+            "/api/v1/users/me,http://localhost:3000", "/api/v1/users/me,http://localhost:5173"})
+    void allowedFrontendCanPreflightAndPatchProfile(String path, String origin) throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
+                .passwordHash("unused-test-hash").build());
+        var preflight = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                .header("Origin", origin).header("Access-Control-Request-Method", "PATCH")
+                .header("Access-Control-Request-Headers", "authorization,content-type")
+                .method("OPTIONS", HttpRequest.BodyPublishers.noBody()).build();
+        var allowed = client.send(preflight, HttpResponse.BodyHandlers.ofString());
+        assertThat(allowed.statusCode()).as(allowed.body()).isEqualTo(200);
+        assertThat(allowed.headers().firstValue("Access-Control-Allow-Origin")).contains(origin);
+        assertThat(allowed.headers().firstValue("Access-Control-Allow-Methods").orElse("")).contains("PATCH");
+        assertThat(allowed.headers().firstValue("Access-Control-Allow-Headers").orElse("").toLowerCase(java.util.Locale.ROOT))
+                .contains("authorization", "content-type");
+        var update = HttpRequest.newBuilder(preflight.uri()).header("Origin", origin)
+                .header("Authorization", "Bearer " + jwtService.generateToken(user))
+                .header("Content-Type", "application/json")
+                .method("PATCH", HttpRequest.BodyPublishers.ofString("{\"full_name\":\"Nguyễn Văn An\"}")).build();
+        var response = client.send(update, HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        assertThat(response.headers().firstValue("Access-Control-Allow-Origin")).contains(origin);
+        assertThat(userRepository.findById(user.getUserId()).orElseThrow().getFullName()).isEqualTo("Nguyễn Văn An");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/users/me", "/api/v1/users/me"})
+    void blankNamesCannotMutateUserOrProfile(String path) throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
+                .passwordHash("unused-test-hash").build());
+        String token = jwtService.generateToken(user);
+        assertThat(patch(path, "{\"bio\":\"Original bio\"}", token).statusCode()).isEqualTo(200);
+        JsonNode before = objectMapper.readTree(send(path, null, token).body());
+        for (String blank : new String[]{"", " \t\n", "\u2003", "\u3000", " \u2003\t\u3000"}) {
+            var response = patch(path, objectMapper.writeValueAsString(
+                    java.util.Map.of("full_name", blank, "bio", "Must not persist")), token);
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+            JsonNode error = objectMapper.readTree(response.body());
+            assertThat(error.get("code").asText()).isEqualTo("VALIDATION_ERROR");
+            assertThat(error.get("validation_errors").has("full_name")).isTrue();
+            assertThat(objectMapper.readTree(send(path, null, token).body())).isEqualTo(before);
+        }
     }
 
     private void assertProfileRoutesMatch(String token, JsonNode expected) throws Exception {

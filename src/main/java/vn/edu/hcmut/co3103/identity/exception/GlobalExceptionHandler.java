@@ -17,6 +17,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import tools.jackson.databind.util.NamingStrategyImpls;
+import vn.edu.hcmut.co3103.identity.dto.auth.request.ForgotPasswordRequest;
+import vn.edu.hcmut.co3103.identity.dto.auth.request.ResetPasswordRequest;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -28,8 +30,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(InvalidPasswordResetTokenException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidPasswordResetToken(
             InvalidPasswordResetTokenException exception, HttpServletRequest request) {
-        return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
-                .body(errorResponse(HttpStatus.BAD_REQUEST, exception.getMessage(), request)
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.UNAUTHORIZED, exception.getMessage(), request)
                         .code("INVALID_OR_EXPIRED_RESET_TOKEN").build());
     }
 
@@ -121,10 +123,17 @@ public class GlobalExceptionHandler {
         exception.getBindingResult().getFieldErrors().forEach(error ->
                 validationErrors.putIfAbsent(NamingStrategyImpls.SNAKE_CASE.translate(error.getField()),
                         error.getDefaultMessage()));
+        String code = "VALIDATION_ERROR";
+        Object target = exception.getBindingResult().getTarget();
+        if (target instanceof ForgotPasswordRequest && exception.getBindingResult().hasFieldErrors("email")) {
+            code = "BAD_REQUEST";
+        } else if (target instanceof ResetPasswordRequest && exception.getBindingResult().hasFieldErrors("newPassword")) {
+            code = "PASSWORD_POLICY_VIOLATION";
+        }
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
-                        .code("VALIDATION_ERROR")
+                        .code(code)
                         .validationErrors(validationErrors)
                         .build());
     }

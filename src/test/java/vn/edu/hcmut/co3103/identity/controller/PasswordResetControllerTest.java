@@ -64,8 +64,9 @@ class PasswordResetControllerTest {
         doThrow(new InvalidPasswordResetTokenException()).when(service).resetPassword(any());
         mvc.perform(post("/auth/reset-password").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"token\":\"" + token + "\",\"new_password\":\"NewPassword123!\"}"))
-                .andExpect(status().isBadRequest())
+                .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("INVALID_OR_EXPIRED_RESET_TOKEN"))
+                .andExpect(jsonPath("$.status").value(401))
                 .andExpect(jsonPath("$.message").value("Invalid or expired password reset token"))
                 .andExpect(jsonPath("$.path").value("/auth/reset-password"));
     }
@@ -101,6 +102,7 @@ class PasswordResetControllerTest {
         mvc.perform(post("/auth/reset-password").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"token\":\"t\",\"new_password\":\"" + password + "a\"}"))
                 .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("PASSWORD_POLICY_VIOLATION"))
                 .andExpect(jsonPath("$.validation_errors.new_password").exists());
         verifyNoInteractions(service);
         mvc.perform(post("/auth/reset-password").contentType(MediaType.APPLICATION_JSON)

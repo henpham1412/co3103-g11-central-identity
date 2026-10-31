@@ -48,7 +48,8 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /** Real HTTP and PostgreSQL transactions, including asynchronous issuance and single-use races. */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "app.reset-password.base-url=https://frontend.example/reset-password")
 @ExtendWith(OutputCaptureExtension.class)
 class PasswordResetHttpIntegrationTest {
     private static final String OLD_PASSWORD = "OriginalPassword123!";
@@ -80,7 +81,17 @@ class PasswordResetHttpIntegrationTest {
     @ValueSource(strings = {"/auth", "/api/v1/auth"})
     void recoveryChangesLoginPasswordAndRejectsReplay(String prefix, CapturedOutput output) throws Exception {
         User user = createUser(UserStatus.ACTIVE);
-        String token = requestToken(prefix, user);
+        var acknowledgement = post(prefix + "/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
+        assertThat(acknowledgement.statusCode()).isEqualTo(200);
+        String deliveryPrefix = "Password reset delivery to " + user.getEmail() + ": ";
+        await().atMost(Duration.ofSeconds(10)).until(() -> output.getAll().contains(deliveryPrefix));
+        awaitIdle();
+        String link = output.getAll().lines().filter(line -> line.contains(deliveryPrefix))
+                .map(line -> line.substring(line.indexOf(deliveryPrefix) + deliveryPrefix.length()))
+                .findFirst().orElseThrow();
+        assertThat(link).startsWith("https://frontend.example/reset-password?token=");
+        String token = URI.create(link).getRawQuery().substring("token=".length());
+        assertThat(token).matches("[A-Za-z0-9_-]{43}");
         PasswordReset reset = resets.findByTokenHash(hash(token)).orElseThrow();
         assertThat(reset.isUsed()).isFalse();
         assertThat(reset.getUsedAt()).isNull();
@@ -103,8 +114,7 @@ class PasswordResetHttpIntegrationTest {
         assertThat(users.findById(user.getUserId()).orElseThrow().getPasswordHash()).isEqualTo(persisted.getPasswordHash());
         assertThat(post(prefix + "/login", loginBody(user, OLD_PASSWORD)).statusCode()).isEqualTo(401);
         assertThat(post(prefix + "/login", loginBody(user, NEW_PASSWORD)).statusCode()).isEqualTo(200);
-        assertThat(output.getAll()).contains("Simulated password reset email delivery")
-                .doesNotContain(token, OLD_PASSWORD, NEW_PASSWORD);
+        assertThat(output.getAll()).contains(deliveryPrefix + link).doesNotContain(OLD_PASSWORD, NEW_PASSWORD);
     }
 
     @ParameterizedTest
@@ -126,8 +136,10 @@ class PasswordResetHttpIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"expired", "used", "legacyUsed", "missing"})
-    void invalidTokensDoNotChangeDatabase(String scenario) throws Exception {
+    @org.junit.jupiter.params.provider.CsvSource({
+            "/auth,expired", "/auth,used", "/auth,legacyUsed", "/auth,missing",
+            "/api/v1/auth,expired", "/api/v1/auth,used", "/api/v1/auth,legacyUsed", "/api/v1/auth,missing"})
+    void invalidTokensDoNotChangeDatabase(String prefix, String scenario) throws Exception {
         User user = createUser(UserStatus.ACTIVE);
         String token = requestToken("/auth", user);
         PasswordReset reset = resets.findByTokenHash(hash(token)).orElseThrow();
@@ -142,7 +154,7 @@ class PasswordResetHttpIntegrationTest {
             token = "unknown-token";
         }
         PasswordReset before = resets.findById(reset.getResetId()).orElseThrow();
-        assertInvalid(post("/auth/reset-password", resetBody(token, NEW_PASSWORD)));
+        assertInvalid(post(prefix + "/reset-password", resetBody(token, NEW_PASSWORD)));
         assertThat(users.findById(user.getUserId()).orElseThrow().getPasswordHash()).isEqualTo(user.getPasswordHash());
         PasswordReset after = resets.findById(reset.getResetId()).orElseThrow();
         assertThat(after.isUsed()).isEqualTo(before.isUsed());
@@ -159,8 +171,8 @@ class PasswordResetHttpIntegrationTest {
             var second = workers.submit(() -> { start.await(); return post("/auth/reset-password", resetBody(token, "OtherPassword789!")); });
             start.countDown();
             var responses = List.of(first.get(20, TimeUnit.SECONDS), second.get(20, TimeUnit.SECONDS));
-            assertThat(responses).extracting(HttpResponse::statusCode).containsExactlyInAnyOrder(200, 400);
-            assertInvalid(responses.stream().filter(response -> response.statusCode() == 400).findFirst().orElseThrow());
+            assertThat(responses).extracting(HttpResponse::statusCode).containsExactlyInAnyOrder(200, 401);
+            assertInvalid(responses.stream().filter(response -> response.statusCode() == 401).findFirst().orElseThrow());
             String winningPassword = responses.getFirst().statusCode() == 200 ? NEW_PASSWORD : "OtherPassword789!";
             assertThat(encoder.matches(winningPassword, users.findById(user.getUserId()).orElseThrow().getPasswordHash())).isTrue();
         }
@@ -212,6 +224,38 @@ class PasswordResetHttpIntegrationTest {
         assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).isEmpty();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"/auth", "/api/v1/auth"})
+    void recoveryValidationUsesSpecificCodesWithoutDatabaseChanges(String prefix) throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        String token = requestToken(prefix, user);
+        for (String email : new String[]{"", " ", "invalid", "a".repeat(250) + "@example.com"}) {
+            var response = post(prefix + "/forgot-password", mapper.writeValueAsString(java.util.Map.of("email", email)));
+            assertValidation(response, "BAD_REQUEST", "email");
+        }
+        for (String password : new String[]{"", "short", "        ", "a".repeat(73), "é".repeat(37), "😀".repeat(19)}) {
+            var response = post(prefix + "/reset-password", resetBody(token, password));
+            assertValidation(response, "PASSWORD_POLICY_VIOLATION", "new_password");
+        }
+        assertValidation(post(prefix + "/reset-password", resetBody(" ", NEW_PASSWORD)), "VALIDATION_ERROR", "token");
+        assertThat(users.findById(user.getUserId()).orElseThrow().getPasswordHash()).isEqualTo(user.getPasswordHash());
+        var issued = resets.findByUserIdOrderByCreatedAtDesc(user.getUserId());
+        assertThat(issued).hasSize(1);
+        assertThat(issued.getFirst().isUsed()).isFalse();
+        assertThat(issued.getFirst().getUsedAt()).isNull();
+    }
+
+    private void assertValidation(HttpResponse<String> response, String code, String field) {
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+        var error = mapper.readTree(response.body());
+        assertThat(error.get("code").asText()).isEqualTo(code);
+        assertThat(error.get("status").asInt()).isEqualTo(400);
+        assertThat(error.get("error").asText()).isEqualTo("Bad Request");
+        assertThat(error.get("path").asText()).isEqualTo(response.request().uri().getPath());
+        assertThat(error.get("timestamp").asText()).isNotBlank();
+        assertThat(error.get("validation_errors").has(field)).isTrue();
+    }
+
     private String requestToken(String prefix, User user) throws Exception {
         var response = post(prefix + "/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
         assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
@@ -254,8 +298,12 @@ class PasswordResetHttpIntegrationTest {
     }
 
     private void assertInvalid(HttpResponse<String> response) {
-        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(401);
         var error = mapper.readTree(response.body());
+        assertThat(error.get("status").asInt()).isEqualTo(401);
+        assertThat(error.get("error").asText()).isEqualTo("Unauthorized");
+        assertThat(error.get("path").asText()).isEqualTo(response.request().uri().getPath());
+        assertThat(error.get("timestamp").asText()).isNotBlank();
         assertThat(error.get("code").asText()).isEqualTo("INVALID_OR_EXPIRED_RESET_TOKEN");
         assertThat(error.get("message").asText()).isEqualTo("Invalid or expired password reset token");
     }
