@@ -117,13 +117,93 @@ On the first execution, Maven Wrapper may download the configured Maven distribu
 
 This verifies that the application can be compiled and packaged without executing tests. Run the test suite once the required local configuration and tests are ready.
 
-### 5.4 Configure the Database
+### 5.4 Configure the Local Environment
 
-The service uses PostgreSQL. Each developer should use a local development database rather than relying on another developer's local database.
+Create a local PostgreSQL database named `central_identity_dev`, for example with
+`createdb -U postgres central_identity_dev`. Flyway applies the schema migrations at startup.
 
-The exact database name, connection settings, and schema migration workflow will be documented after the team finalizes the local database setup.
+Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell, or
+`cp .env.example .env` in Bash). Set `DB_PASSWORD` to your local PostgreSQL password;
+adjust `DB_URL` and `DB_USERNAME` if needed. The `.env` file is ignored by Git.
+Use single quotes around values containing shell-special characters.
 
-Do not commit local database passwords, signing keys, or other secrets to the repository. Keep machine-specific configuration separate from shared project files.
+Spring Boot does **not** load `.env` automatically. Load its values into the same shell
+used to start Maven, or configure them as environment variables in your IDE's run configuration.
+The commands below support the template's single-quoted PEM values and preserve literal `\n` sequences.
+
+**Windows PowerShell**
+
+```powershell
+Get-Content .env | ForEach-Object {
+    if ($_ -match '^([A-Z_][A-Z0-9_]*)=(.*)$') {
+        [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2].Trim("'"), 'Process')
+    }
+}
+```
+
+**macOS / Linux (Bash)**
+
+```bash
+set -a
+source ./.env
+set +a
+```
+
+The template includes a fixed, matching **RSA 2048-bit development keypair**. Keep both keys
+configured across local restarts so previously issued LMS access tokens remain verifiable until
+they expire. These keys are public sample data: **never use them in production**. Use a separate,
+privately managed keypair for deployments. Do not commit real passwords or signing keys.
+
+JWTs are signed with **RS256** and include `iss` and a `kid` header. `JWT_ISSUER` defaults to
+`http://localhost:8080`. Public verification keys are available without authentication at
+`GET /.well-known/jwks.json`; consumers should select the key matching `kid`, allow only RS256,
+and validate the configured issuer and expiration.
+
+Set **both** `JWT_PRIVATE_KEY` (PKCS#8 PEM, `BEGIN PRIVATE KEY`) and `JWT_PUBLIC_KEY`
+(X.509 PEM, `BEGIN PUBLIC KEY`) to a matching RSA pair of at least 2048 bits. PEM values may
+contain real newlines or literal `\n` sequences. To create a separate keypair, generate keys outside the repository:
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt-private.pem
+openssl pkey -in jwt-private.pem -pubout -out jwt-public.pem
+```
+
+Load the file contents into the corresponding environment variables. Missing, incomplete, invalid,
+weak, or mismatched keys prevent startup. Local development can explicitly opt into generated keys
+with `JWT_ALLOW_EPHEMERAL_KEYS=true` when neither key is configured. Restarting in that mode invalidates
+existing tokens; configure persistent keys shared by all instances for deployments.
+Tests explicitly enable generated keys. Existing HS256 tokens require login again.
+
+Tokens include `sub` (the canonical UUID `user_id`), `userId`, `email`, `role`, `fullName`, and
+`clientId`. The global role is `USER`; LMS roles remain local to each LMS. An omitted `clientId`
+uses `central-identity` for direct login. A supplied client ID is request context, not proof of
+client authentication or an authorization grant, and must be at most 100 characters without whitespace.
+Tokens issued before this contract that omit `clientId` require login again.
+
+Authentication request and response JSON uses snake_case. Registration accepts `email`, `password`,
+`full_name`, and optional `client_id`, and returns `message`, `user_id`, `email`, `full_name`, and `status`.
+Login accepts `email`, `password`, and optional `client_id` / `redirect_uri`. A supplied client must be
+registered and active, and requires a redirect URI that exactly matches one of that client's registered URIs.
+A redirect URI without a client is rejected. Omitting both selects the `central-identity` context.
+Login returns `access_token`, `token_type` (`Bearer`), `expires_in` (seconds), `client_id`, and a nested
+`user` containing `user_id`, `email`, `full_name`, and `status`. JWT claim names and the `/users/me`
+response contract are unchanged. Errors include a stable machine-readable `code`; optional details use
+`locked_until` and `validation_errors`, with snake_case validation keys such as `full_name` and `client_id`.
+
+The failed-login policy defaults to 5 attempts and a 15-minute lockout. Configure
+`auth.login.max-failed-attempts` / `AUTH_LOGIN_MAX_FAILED_ATTEMPTS` and
+`auth.login.lockout-duration` / `AUTH_LOGIN_LOCKOUT_DURATION` (for example `90s` or `15m`).
+Both values must be positive; invalid policy configuration prevents startup.
+
+`JWT_EXPIRATION_MS` defaults to `86400000` (24 hours), and `JWT_REFRESH_EXPIRATION_MS`
+defaults to `604800000` (7 days). Refresh token issuance is not implemented yet.
+
+Run the JWT unit tests without a database or an environment signing key:
+
+```powershell
+.\mvnw.cmd test-compile
+.\mvnw.cmd test '-Dtest=JwtServiceTest'
+```
 
 ### 5.5 Run the Application
 
@@ -141,7 +221,11 @@ After configuring a reachable local PostgreSQL database and the corresponding Sp
 ./mvnw spring-boot:run
 ```
 
-The application will start on the configured server port. The port and API base path will be documented once the application configuration is finalized.
+The application uses `SERVER_PORT=8080` by default. Registration, login, and current-user APIs
+are available at `/auth/register`, `/auth/login`, and `/users/me`, with compatible aliases under
+`/api/v1`. Request bodies must be JSON objects with the documented fields and string types;
+unknown fields, duplicate keys, trailing values, and implicit number/boolean-to-string conversions
+are rejected before business logic. Passwords require at least 8 characters and at most 72 UTF-8 bytes.
 
 ## 6. Maven Wrapper Configuration
 
