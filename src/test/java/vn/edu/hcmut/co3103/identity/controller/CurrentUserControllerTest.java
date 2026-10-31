@@ -73,11 +73,14 @@ class CurrentUserControllerTest {
         String token = jwtService.generateToken(user);
         user.setFullName("Updated Student");
         when(userRepository.findById(user.getUserId())).thenReturn(Optional.of(user));
+        when(userService.getCurrentUserProfile(user.getUserId())).thenReturn(
+                new vn.edu.hcmut.co3103.identity.dto.user.response.CurrentUserProfileResponse(
+                        user.getUserId(), user.getEmail(), user.getFullName(), user.getStatus(), null));
 
         mockMvc.perform(get(PATH).header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$", aMapWithSize(5)))
+                .andExpect(jsonPath("$", aMapWithSize(8)))
                 .andExpect(jsonPath("$.id").value(user.getUserId().toString()))
                 .andExpect(jsonPath("$.email").value(user.getEmail()))
                 .andExpect(jsonPath("$.fullName").value("Updated Student"))
@@ -161,8 +164,9 @@ class CurrentUserControllerTest {
                 .andExpect(status().isNotAcceptable());
     }
 
-    @Test
-    void currentUserProfileReturnsCompleteUserProfile() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"/users/me", "/api/v1/users/me", "/users/me/profile", "/api/v1/users/me/profile"})
+    void currentUserProfileReturnsCompleteUserProfile(String path) throws Exception {
         String token = jwtService.generateToken(user);
         when(userRepository.findById(user.getUserId())).thenReturn(Optional.of(user));
 
@@ -186,7 +190,7 @@ class CurrentUserControllerTest {
 
         when(userService.getCurrentUserProfile(user.getUserId())).thenReturn(fullResponse);
 
-        mockMvc.perform(get("/api/v1/users/me/profile").header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+        mockMvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.user_id").value(user.getUserId().toString()))

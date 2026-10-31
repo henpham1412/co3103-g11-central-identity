@@ -46,7 +46,8 @@ public class UserService {
 
     @Transactional
     public UpdateProfileResponse updateProfile(UUID userId, UpdateProfileRequest request) {
-        User user = userRepository.findById(userId)
+        // Share the user row lock with password resets and login/lockout updates.
+        User user = userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
         if (request.getFullName() != null) {
@@ -57,26 +58,25 @@ public class UserService {
         UserProfile profile = userProfileRepository.findById(userId).orElse(null);
         if (profile == null) {
             profile = new UserProfile();
-            profile.setUserId(userId);
             profile.setUser(user);
         }
 
-        if (request.getAvatarUrl() != null) {
+        if (request.getAvatarUrl() != null || request.hasField("avatar_url")) {
             profile.setAvatarUrl(request.getAvatarUrl());
         }
-        if (request.getBio() != null) {
+        if (request.getBio() != null || request.hasField("bio")) {
             profile.setBio(request.getBio());
         }
-        if (request.getPhoneNumber() != null) {
+        if (request.getPhoneNumber() != null || request.hasField("phone_number")) {
             profile.setPhoneNumber(request.getPhoneNumber());
         }
-        if (request.getDateOfBirth() != null) {
+        if (request.getDateOfBirth() != null || request.hasField("date_of_birth")) {
             profile.setDateOfBirth(request.getDateOfBirth());
         }
-        if (request.getLocale() != null) {
+        if (request.getLocale() != null || request.hasField("locale")) {
             profile.setLocale(request.getLocale());
         }
-        if (request.getTimezone() != null) {
+        if (request.getTimezone() != null || request.hasField("timezone")) {
             profile.setTimezone(request.getTimezone());
         }
 

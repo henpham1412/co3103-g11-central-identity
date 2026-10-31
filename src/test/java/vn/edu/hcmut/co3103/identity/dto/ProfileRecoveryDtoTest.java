@@ -116,7 +116,7 @@ class ProfileRecoveryDtoTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"fullName", "avatarUrl", "phoneNumber", "dateOfBirth", "email", "user_id", "status"})
+    @ValueSource(strings = {"fullName", "avatarUrl", "phoneNumber", "dateOfBirth", "email", "user_id", "status", "suppliedFields"})
     void rejectsUndocumentedOrProtectedProfileFields(String field) {
         assertThrows(UnrecognizedPropertyException.class,
                 () -> mapper.readValue("{\"" + field + "\":null}", UpdateProfileRequest.class));
@@ -157,15 +157,19 @@ class ProfileRecoveryDtoTest {
     }
 
     @Test
-    void serializesCurrentProfileWithExactlyTheDocumentedFields() {
+    void serializesCurrentProfileWithDocumentedFieldsAndLegacyIdentityAliases() {
         UUID userId = UUID.randomUUID();
         var profile = new UserProfileResponse("https://storage.example.com/avatar.png", "Student", "+84912345678",
                 LocalDate.of(2000, 1, 2), "vi-VN", "Asia/Ho_Chi_Minh");
         var response = new CurrentUserProfileResponse(userId, "student@example.com", "Nguyen Van A",
                 UserStatus.ACTIVE, profile);
         var json = mapper.readTree(mapper.writeValueAsString(response));
-        assertThat(json.propertyNames()).containsExactlyInAnyOrder("user_id", "email", "full_name", "status", "profile");
+        assertThat(json.propertyNames()).containsExactlyInAnyOrder(
+                "user_id", "email", "full_name", "status", "profile", "id", "fullName", "role");
         assertThat(json.get("user_id").asString()).isEqualTo(userId.toString());
+        assertThat(json.get("id")).isEqualTo(json.get("user_id"));
+        assertThat(json.get("fullName")).isEqualTo(json.get("full_name"));
+        assertThat(json.get("role").asString()).isEqualTo("USER");
         assertThat(json.get("profile")).isEqualTo(mapper.readTree("""
                 {"avatar_url":"https://storage.example.com/avatar.png","bio":"Student",
                  "phone_number":"+84912345678","date_of_birth":"2000-01-02",
@@ -174,6 +178,16 @@ class ProfileRecoveryDtoTest {
         var missingProfile = new CurrentUserProfileResponse(userId, "student@example.com", "Nguyen Van A",
                 UserStatus.ACTIVE, null);
         assertThat(mapper.readTree(mapper.writeValueAsString(missingProfile)).get("profile").isNull()).isTrue();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"avatar_url", "bio", "phone_number", "date_of_birth", "locale", "timezone"})
+    void distinguishesExplicitNullFromAnOmittedProfileField(String field) {
+        var omitted = mapper.readValue("{}", UpdateProfileRequest.class);
+        var explicitNull = mapper.readValue("{\"" + field + "\":null}", UpdateProfileRequest.class);
+        assertThat(omitted.hasField(field)).isFalse();
+        assertThat(explicitNull.hasField(field)).isTrue();
+        assertThat(validator.validate(explicitNull)).isEmpty();
     }
 
     @Test

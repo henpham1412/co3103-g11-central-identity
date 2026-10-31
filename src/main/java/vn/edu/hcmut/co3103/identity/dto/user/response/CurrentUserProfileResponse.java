@@ -11,4 +11,20 @@ public record CurrentUserProfileResponse(
         @JsonProperty("full_name") String fullName,
         @JsonProperty("status") UserStatus status,
         @JsonProperty("profile") UserProfileResponse profile) {
+
+    // Preserve the identity fields consumed by clients of the original /users/me response.
+    @JsonProperty("id")
+    public UUID legacyId() {
+        return userId;
+    }
+
+    @JsonProperty("fullName")
+    public String legacyFullName() {
+        return fullName;
+    }
+
+    @JsonProperty("role")
+    public String legacyRole() {
+        return "USER";
+    }
 }

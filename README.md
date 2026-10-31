@@ -186,8 +186,8 @@ Login accepts `email`, `password`, and optional `client_id` / `redirect_uri`. A 
 registered and active, and requires a redirect URI that exactly matches one of that client's registered URIs.
 A redirect URI without a client is rejected. Omitting both selects the `central-identity` context.
 Login returns `access_token`, `token_type` (`Bearer`), `expires_in` (seconds), `client_id`, and a nested
-`user` containing `user_id`, `email`, `full_name`, and `status`. JWT claim names and the `/users/me`
-response contract are unchanged. Errors include a stable machine-readable `code`; optional details use
+`user` containing `user_id`, `email`, `full_name`, and `status`. JWT claim names are unchanged.
+Errors include a stable machine-readable `code`; optional details use
 `locked_until` and `validation_errors`, with snake_case validation keys such as `full_name` and `client_id`.
 
 The failed-login policy defaults to 5 attempts and a 15-minute lockout. Configure
@@ -226,6 +226,13 @@ are available at `/auth/register`, `/auth/login`, and `/users/me`, with compatib
 `/api/v1`. Request bodies must be JSON objects with the documented fields and string types;
 unknown fields, duplicate keys, trailing values, and implicit number/boolean-to-string conversions
 are rejected before business logic. Passwords require at least 8 characters and at most 72 UTF-8 bytes.
+
+`GET /users/me` returns the DOC-05 account fields (`user_id`, `email`, `full_name`, `status`) and
+the nested `profile`, or `profile: null` when no optional profile row exists. The original `id`,
+`fullName`, and `role` fields remain available for existing clients. `/users/me/profile` is an
+alias of this response; both routes also support the `/api/v1` prefix.
+`PATCH /users/me` preserves omitted fields. Explicit `null` clears `avatar_url`, `bio`,
+`phone_number`, `date_of_birth`, `locale`, or `timezone`; `full_name: null` preserves the required name.
 
 Password recovery is available at `POST /auth/forgot-password` and `POST /auth/reset-password`,
 including their `/api/v1/auth` aliases. Both routes are public. Forgot-password accepts `email`

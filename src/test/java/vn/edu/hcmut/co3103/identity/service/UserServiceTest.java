@@ -103,7 +103,7 @@ class UserServiceTest {
 
     @Test
     void updateProfileCreatesNewProfileRowWhenNotExists() {
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(userProfileRepository.findById(userId)).thenReturn(Optional.empty());
 
         UpdateProfileRequest request = UpdateProfileRequest.builder()
@@ -127,7 +127,9 @@ class UserServiceTest {
         ArgumentCaptor<UserProfile> captor = ArgumentCaptor.forClass(UserProfile.class);
         verify(userProfileRepository).save(captor.capture());
         UserProfile saved = captor.getValue();
-        assertThat(saved.getUserId()).isEqualTo(userId);
+        assertThat(saved.getUserId()).isNull();
+        assertThat(saved.getUser()).isSameAs(user);
+        verify(userRepository, never()).findById(userId);
         assertThat(saved.getAvatarUrl()).isEqualTo("https://example.com/new-avatar.png");
         assertThat(saved.getBio()).isEqualTo("Updated Bio");
         assertThat(saved.getPhoneNumber()).isEqualTo("+84987654321");
@@ -145,7 +147,7 @@ class UserServiceTest {
         existing.setBio("Old bio");
         existing.setPhoneNumber("+84900000000");
 
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(userProfileRepository.findById(userId)).thenReturn(Optional.of(existing));
 
         UpdateProfileRequest request = UpdateProfileRequest.builder()
@@ -165,7 +167,7 @@ class UserServiceTest {
 
     @Test
     void updateProfileThrowsWhenUserNotFound() {
-        when(userRepository.findById(userId)).thenReturn(Optional.empty());
+        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> userService.updateProfile(userId, new UpdateProfileRequest()))
                 .isInstanceOf(ResourceNotFoundException.class)

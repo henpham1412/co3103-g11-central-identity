@@ -10,7 +10,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import vn.edu.hcmut.co3103.identity.dto.user.request.UpdateProfileRequest;
 import vn.edu.hcmut.co3103.identity.dto.user.response.CurrentUserProfileResponse;
-import vn.edu.hcmut.co3103.identity.dto.user.response.CurrentUserResponse;
 import vn.edu.hcmut.co3103.identity.dto.user.response.UpdateProfileResponse;
 import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 import vn.edu.hcmut.co3103.identity.service.UserService;
@@ -25,18 +24,7 @@ public class CurrentUserController {
         this.userService = userService;
     }
 
-    @GetMapping(value = "/me", produces = MediaType.APPLICATION_JSON_VALUE)
-    public CurrentUserResponse currentUser(@AuthenticationPrincipal IdentityUserDetails user) {
-        return new CurrentUserResponse(
-                user.getUserId(),
-                user.getUsername(),
-                user.getFullName(),
-                user.getStatus(),
-                "USER"
-        );
-    }
-
-    @GetMapping(value = "/me/profile", produces = MediaType.APPLICATION_JSON_VALUE)
+    @GetMapping(value = {"/me", "/me/profile"}, produces = MediaType.APPLICATION_JSON_VALUE)
     public CurrentUserProfileResponse currentUserProfile(@AuthenticationPrincipal IdentityUserDetails user) {
         return userService.getCurrentUserProfile(user.getUserId());
     }

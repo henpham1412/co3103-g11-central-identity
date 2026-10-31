@@ -13,6 +13,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.entity.UserStatus;
+import vn.edu.hcmut.co3103.identity.repository.UserProfileRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtTestKeys;
@@ -37,6 +38,8 @@ class CurrentUserHttpIntegrationTest {
     private int port;
     @Autowired
     private UserRepository userRepository;
+    @Autowired
+    private UserProfileRepository userProfileRepository;
     @Autowired
     private JwtService jwtService;
     @Autowired
@@ -70,57 +73,104 @@ class CurrentUserHttpIntegrationTest {
         HttpResponse<String> response = send(PATH, null, token);
         assertThat(response.statusCode()).isEqualTo(200);
         JsonNode profile = objectMapper.readTree(response.body());
-        assertThat(profile.size()).isEqualTo(5);
+        assertThat(profile.size()).isEqualTo(8);
         assertThat(profile.get("id").asText()).isEqualTo(user.getUserId().toString());
         assertThat(profile.get("email").asText()).isEqualTo(email);
         assertThat(profile.get("fullName").asText()).isEqualTo("Profile Student");
         assertThat(profile.get("status").asText()).isEqualTo("ACTIVE");
         assertThat(profile.get("role").asText()).isEqualTo("USER");
+        assertThat(profile.get("user_id").asText()).isEqualTo(user.getUserId().toString());
+        assertThat(profile.get("full_name").asText()).isEqualTo("Profile Student");
+        assertThat(profile.get("profile").isNull()).isTrue();
         assertThat(response.headers().firstValue("Set-Cookie")).isEmpty();
 
-        // Verify GET /users/me/profile returns full profile DTO
-        HttpResponse<String> profileResponse = send("/api/v1/users/me/profile", null, token);
-        assertThat(profileResponse.statusCode()).isEqualTo(200);
-        JsonNode fullProfile = objectMapper.readTree(profileResponse.body());
-        assertThat(fullProfile.get("user_id").asText()).isEqualTo(user.getUserId().toString());
-        assertThat(fullProfile.get("email").asText()).isEqualTo(email);
-        assertThat(fullProfile.get("full_name").asText()).isEqualTo("Profile Student");
+        assertProfileRoutesMatch(token, profile);
+        assertThat(userProfileRepository.findById(user.getUserId())).isEmpty();
 
         // Verify PATCH /users/me updates profile information
         String updateBody = """
                 {
                     "full_name": "Updated Profile Student",
+                    "avatar_url": "https://example.com/avatar.png",
                     "bio": "Software Engineering Student",
                     "phone_number": "+84912345678",
+                    "date_of_birth": "2000-01-02",
                     "locale": "vi",
                     "timezone": "Asia/Ho_Chi_Minh"
                 }
                 """;
-        var patchRequest = HttpRequest.newBuilder(URI.create("http://localhost:" + port + PATH))
-                .timeout(Duration.ofSeconds(15))
-                .header("Accept", "application/json")
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + token)
-                .method("PATCH", HttpRequest.BodyPublishers.ofString(updateBody))
-                .build();
-        HttpResponse<String> patchResponse = client.send(patchRequest, HttpResponse.BodyHandlers.ofString());
-        assertThat(patchResponse.statusCode()).isEqualTo(200);
+        HttpResponse<String> patchResponse = patch("/users/me", updateBody, token);
+        assertThat(patchResponse.statusCode()).as(patchResponse.body()).isEqualTo(200);
         JsonNode patchResult = objectMapper.readTree(patchResponse.body());
         assertThat(patchResult.get("message").asText()).isEqualTo("Profile updated successfully");
         assertThat(patchResult.get("updated_at")).isNotNull();
 
-        user.setFullName("Updated Profile Student");
-        userRepository.saveAndFlush(user);
+        var savedProfile = userProfileRepository.findById(user.getUserId()).orElseThrow();
+        assertThat(savedProfile.getUserId()).isEqualTo(user.getUserId());
+        assertThat(savedProfile.getAvatarUrl()).isEqualTo("https://example.com/avatar.png");
+        assertThat(savedProfile.getBio()).isEqualTo("Software Engineering Student");
+        assertThat(savedProfile.getPhoneNumber()).isEqualTo("+84912345678");
+        assertThat(savedProfile.getDateOfBirth()).isEqualTo(java.time.LocalDate.of(2000, 1, 2));
+        assertThat(savedProfile.getLocale()).isEqualTo("vi");
+        assertThat(savedProfile.getTimezone()).isEqualTo("Asia/Ho_Chi_Minh");
         HttpResponse<String> updated = send(PATH, null, token);
         assertThat(updated.statusCode()).isEqualTo(200);
-        assertThat(objectMapper.readTree(updated.body()).get("fullName").asText())
-                .isEqualTo("Updated Profile Student");
+        JsonNode updatedProfile = objectMapper.readTree(updated.body());
+        assertThat(updatedProfile.get("full_name").asText()).isEqualTo("Updated Profile Student");
+        assertThat(updatedProfile.get("fullName")).isEqualTo(updatedProfile.get("full_name"));
+        assertThat(updatedProfile.get("profile").get("bio").asText()).isEqualTo("Software Engineering Student");
+        assertProfileRoutesMatch(token, updatedProfile);
 
+        // Omitted fields retain their values, including when full_name is explicitly null.
+        assertThat(patch(PATH, "{\"full_name\":null,\"bio\":\"Only bio changed\"}", token).statusCode()).isEqualTo(200);
+        JsonNode partial = objectMapper.readTree(send(PATH, null, token).body());
+        assertThat(partial.get("full_name")).isEqualTo(updatedProfile.get("full_name"));
+        for (String field : new String[]{"avatar_url", "phone_number", "date_of_birth", "locale", "timezone"}) {
+            assertThat(partial.get("profile").get(field)).isEqualTo(updatedProfile.get("profile").get(field));
+        }
+        assertThat(partial.get("profile").get("bio").asText()).isEqualTo("Only bio changed");
+
+        assertThat(patch("/users/me", """
+                {"avatar_url":null,"bio":null,"phone_number":null,"date_of_birth":null,"locale":null,"timezone":null}
+                """, token).statusCode()).isEqualTo(200);
+        JsonNode cleared = objectMapper.readTree(send(PATH, null, token).body());
+        assertThat(cleared.get("full_name")).isEqualTo(updatedProfile.get("full_name"));
+        assertThat(cleared.get("profile").size()).isEqualTo(6);
+        cleared.get("profile").forEach(value -> assertThat(value.isNull()).isTrue());
+        savedProfile = userProfileRepository.findById(user.getUserId()).orElseThrow();
+        assertThat(savedProfile.getAvatarUrl()).isNull();
+        assertThat(savedProfile.getBio()).isNull();
+        assertThat(savedProfile.getPhoneNumber()).isNull();
+        assertThat(savedProfile.getDateOfBirth()).isNull();
+        assertThat(savedProfile.getLocale()).isNull();
+        assertThat(savedProfile.getTimezone()).isNull();
+        assertProfileRoutesMatch(token, cleared);
+        assertThat(userProfileRepository.findAll().stream()
+                .map(row -> row.getUserId()).filter(user.getUserId()::equals).count()).isEqualTo(1);
+
+        user = userRepository.findById(user.getUserId()).orElseThrow();
         user.setStatus(UserStatus.SUSPENDED);
         userRepository.saveAndFlush(user);
         assertUnauthorized(send(PATH, null, token));
         userRepository.deleteById(user.getUserId());
         assertUnauthorized(send(PATH, null, token));
+    }
+
+    private void assertProfileRoutesMatch(String token, JsonNode expected) throws Exception {
+        for (String path : new String[]{"/users/me", "/api/v1/users/me", "/users/me/profile", "/api/v1/users/me/profile"}) {
+            HttpResponse<String> response = send(path, null, token);
+            assertThat(response.statusCode()).as(path + ": " + response.body()).isEqualTo(200);
+            assertThat(objectMapper.readTree(response.body())).isEqualTo(expected);
+        }
+    }
+
+    private HttpResponse<String> patch(String path, String body, String token) throws Exception {
+        return client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                .timeout(Duration.ofSeconds(15))
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + token)
+                .method("PATCH", HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
     }
 
     @Test
