@@ -1,5 +1,6 @@
 package vn.edu.hcmut.co3103.identity.security;
 
+import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -52,7 +53,12 @@ import static org.mockito.Mockito.*;
 
 /** Real HTTP and PostgreSQL transactions, including asynchronous issuance and single-use races. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "app.reset-password.base-url=https://frontend.example/reset-password")
+        properties = {
+                "app.reset-password.base-url=https://frontend.example/reset-password",
+                "spring.datasource.hikari.maximum-pool-size=2",
+                "spring.datasource.hikari.minimum-idle=2",
+                "spring.datasource.hikari.connection-timeout=1000"
+        })
 @ExtendWith(OutputCaptureExtension.class)
 class PasswordResetHttpIntegrationTest {
     private static final String OLD_PASSWORD = "OriginalPassword123!";
@@ -66,6 +72,7 @@ class PasswordResetHttpIntegrationTest {
     @MockitoSpyBean private InMemoryMailSender mailbox;
     @Autowired private PasswordEncoder encoder;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private HikariDataSource dataSource;
     @Autowired private ObjectMapper mapper;
     @Autowired @Qualifier("applicationTaskExecutor") private ThreadPoolTaskExecutor executor;
 
@@ -212,6 +219,51 @@ class PasswordResetHttpIntegrationTest {
         } finally {
             release.countDown();
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 4})
+    void stalledSmtpDeliveryReleasesAllDatabaseConnections(int requestCount) throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        var entered = new CountDownLatch(requestCount);
+        var release = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            entered.countDown();
+            assertThat(release.await(30, TimeUnit.SECONDS)).as("SMTP was released during cleanup").isTrue();
+            return invocation.callRealMethod();
+        }).when(mailbox).send(any(SimpleMailMessage.class));
+
+        try {
+            for (int request = 0; request < requestCount; request++) {
+                assertThat(post("/auth/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}").statusCode())
+                        .isEqualTo(200);
+            }
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("all SMTP sends started, including requests beyond pool size")
+                    .isTrue();
+            await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> {
+                assertThat(dataSource.getHikariPoolMXBean().getActiveConnections())
+                        .as("committed reset transactions release their connections while SMTP is stalled").isZero();
+                assertThat(dataSource.getHikariPoolMXBean().getIdleConnections()).isEqualTo(2);
+            });
+            assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(requestCount);
+            assertThat(mailbox.getMessages()).isEmpty();
+
+            // Borrow the entire real Hikari pool and execute SQL before allowing SMTP to finish.
+            try (var first = dataSource.getConnection(); var second = dataSource.getConnection();
+                 var firstStatement = first.createStatement(); var secondStatement = second.createStatement();
+                 var firstResult = firstStatement.executeQuery("SELECT 1");
+                 var secondResult = secondStatement.executeQuery("SELECT 1")) {
+                assertThat(firstResult.next()).isTrue();
+                assertThat(firstResult.getInt(1)).isEqualTo(1);
+                assertThat(secondResult.next()).isTrue();
+                assertThat(secondResult.getInt(1)).isEqualTo(1);
+                assertThat(release.getCount()).isEqualTo(1);
+            }
+        } finally {
+            release.countDown();
+            awaitIdle();
+        }
+        assertThat(mailbox.getMessages()).hasSize(requestCount);
     }
 
     @ParameterizedTest

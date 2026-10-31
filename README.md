@@ -241,8 +241,10 @@ including their `/api/v1/auth` aliases. Both routes are public. Forgot-password 
 and always acknowledges valid input with the same message, regardless of account existence or status.
 Account lookup, token persistence, and reset-link delivery run asynchronously so account-dependent work
 does not delay the HTTP acknowledgement. The current worker queue is in memory; queued requests
-are not durable across a process restart. Spring Mail sends the reset email after the token
-transaction commits. Configure `app.reset-password.base-url`
+are not durable across a process restart. After the token transaction commits, delivery is
+submitted as a separate task to the application executor, allowing the transaction to release
+its database connection even if SMTP stalls. A rejected submission is logged without attempting
+SMTP on the committing thread; the user can request another email. Configure `app.reset-password.base-url`
 (`APP_RESET_PASSWORD_BASE_URL` in the environment); it defaults to
 `http://localhost:3000/reset-password`. Links have the form `<base-url>?token=<token>`.
 Set `MAIL_USERNAME` to the sending Gmail address and `MAIL_PASSWORD` to its app password.
