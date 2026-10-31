@@ -16,6 +16,7 @@ import vn.edu.hcmut.co3103.identity.exception.ResourceNotFoundException;
 import vn.edu.hcmut.co3103.identity.repository.UserProfileRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Optional;
 import java.util.UUID;
@@ -105,6 +106,9 @@ class UserServiceTest {
     void updateProfileCreatesNewProfileRowWhenNotExists() {
         when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(userProfileRepository.findById(userId)).thenReturn(Optional.empty());
+        Instant persistedAt = Instant.parse("2026-10-31T00:00:00.123456Z");
+        when(userProfileRepository.saveAndFlush(any(UserProfile.class)))
+                .thenReturn(UserProfile.builder().updatedAt(persistedAt).build());
 
         UpdateProfileRequest request = UpdateProfileRequest.builder()
                 .fullName("Nguyen Van A Updated")
@@ -119,13 +123,13 @@ class UserServiceTest {
         UpdateProfileResponse response = userService.updateProfile(userId, request);
 
         assertThat(response.message()).isEqualTo("Profile updated successfully");
-        assertThat(response.updatedAt()).isNotNull();
+        assertThat(response.updatedAt()).isEqualTo(persistedAt);
 
         assertThat(user.getFullName()).isEqualTo("Nguyen Van A Updated");
         verify(userRepository).save(user);
 
         ArgumentCaptor<UserProfile> captor = ArgumentCaptor.forClass(UserProfile.class);
-        verify(userProfileRepository).save(captor.capture());
+        verify(userProfileRepository).saveAndFlush(captor.capture());
         UserProfile saved = captor.getValue();
         assertThat(saved.getUserId()).isNull();
         assertThat(saved.getUser()).isSameAs(user);
@@ -149,6 +153,11 @@ class UserServiceTest {
 
         when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(user));
         when(userProfileRepository.findById(userId)).thenReturn(Optional.of(existing));
+        Instant persistedAt = Instant.parse("2026-10-31T00:00:00.654321Z");
+        when(userProfileRepository.saveAndFlush(existing)).thenAnswer(invocation -> {
+            existing.setUpdatedAt(persistedAt);
+            return existing;
+        });
 
         UpdateProfileRequest request = UpdateProfileRequest.builder()
                 .bio("Brand new bio")
@@ -157,9 +166,10 @@ class UserServiceTest {
         UpdateProfileResponse response = userService.updateProfile(userId, request);
 
         assertThat(response.message()).isEqualTo("Profile updated successfully");
+        assertThat(response.updatedAt()).isEqualTo(persistedAt);
         verify(userRepository, never()).save(any());
 
-        verify(userProfileRepository).save(existing);
+        verify(userProfileRepository).saveAndFlush(existing);
         assertThat(existing.getBio()).isEqualTo("Brand new bio");
         assertThat(existing.getAvatarUrl()).isEqualTo("https://example.com/old.png");
         assertThat(existing.getPhoneNumber()).isEqualTo("+84900000000");

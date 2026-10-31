@@ -262,6 +262,23 @@ class CurrentUserHttpIntegrationTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"/users/me", "/api/v1/users/me"})
+    void patchTimestampExactlyMatchesPersistedValue(String path) throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
+                .passwordHash("unused-test-hash").build());
+        String token = jwtService.generateToken(user);
+        for (String body : new String[]{"{\"bio\":\"New profile\"}", "{\"bio\":\"Updated profile\"}",
+                "{\"full_name\":\"Updated Name\"}", "{}", "{\"bio\":null}"}) {
+            var response = patch(path, body, token);
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            Instant returned = Instant.parse(objectMapper.readTree(response.body()).get("updated_at").asText());
+            Instant persisted = jdbc.queryForObject("SELECT updated_at FROM user_profiles WHERE user_id = ?",
+                    (row, index) -> row.getTimestamp(1).toInstant(), user.getUserId());
+            assertThat(returned).as("timestamp for PATCH %s", body).isEqualTo(persisted);
+        }
+    }
+
     private void assertProfileRoutesMatch(String token, JsonNode expected) throws Exception {
         for (String path : new String[]{"/users/me", "/api/v1/users/me", "/users/me/profile", "/api/v1/users/me/profile"}) {
             HttpResponse<String> response = send(path, null, token);

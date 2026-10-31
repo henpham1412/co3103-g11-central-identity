@@ -2,6 +2,8 @@ package vn.edu.hcmut.co3103.identity.controller;
 
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.task.TaskRejectedException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -16,13 +18,19 @@ import vn.edu.hcmut.co3103.identity.service.PasswordResetService;
 @RestController
 @RequestMapping({"/auth", "/api/v1/auth"})
 @RequiredArgsConstructor
+@Slf4j
 public class PasswordResetController {
     private final PasswordResetService passwordResetService;
 
     @PostMapping(value = "/forgot-password", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<MessageResponse> forgotPassword(@Valid @RequestBody ForgotPasswordRequest request) {
-        passwordResetService.forgotPassword(request);
+        try {
+            passwordResetService.forgotPassword(request);
+        } catch (TaskRejectedException exception) {
+            // Keep the acknowledgement generic when the bounded async queue is full.
+            log.warn("Password recovery request could not be queued");
+        }
         return ResponseEntity.ok(new MessageResponse(
                 "If the email is eligible for recovery, password reset instructions have been sent."));
     }

@@ -53,31 +53,44 @@ class PasswordResetServiceTest {
 
     @Test
     void forgotStoresOnlyHashOfFreshSecureTokenWithFifteenMinuteLifetime() throws Exception {
-        when(users.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        when(users.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
         Instant before = Instant.now();
         service.forgotPassword(new ForgotPasswordRequest("  STUDENT@EXAMPLE.COM  "));
-        service.forgotPassword(new ForgotPasswordRequest(user.getEmail()));
 
         var tokens = ArgumentCaptor.forClass(String.class);
         var saved = ArgumentCaptor.forClass(PasswordReset.class);
-        verify(notifications, times(2)).send(eq(user.getEmail()), tokens.capture());
-        verify(resets, times(2)).save(saved.capture());
-        assertThat(tokens.getAllValues()).doesNotHaveDuplicates();
-        for (int i = 0; i < 2; i++) {
-            String token = tokens.getAllValues().get(i);
-            PasswordReset reset = saved.getAllValues().get(i);
-            assertThat(token).matches("[A-Za-z0-9_-]{43}");
-            assertThat(reset.getTokenHash()).isEqualTo(hash(token)).isNotEqualTo(token);
-            assertThat(reset.getUserId()).isEqualTo(user.getUserId());
-            assertThat(reset.getExpiresAt()).isBetween(before.plusSeconds(900), Instant.now().plusSeconds(900));
-            assertThat(reset.isUsed()).isFalse();
-            assertThat(reset.getUsedAt()).isNull();
-        }
+        verify(notifications).send(eq(user.getEmail()), tokens.capture());
+        verify(resets).save(saved.capture());
+        String token = tokens.getValue();
+        PasswordReset reset = saved.getValue();
+        assertThat(token).matches("[A-Za-z0-9_-]{43}");
+        assertThat(reset.getTokenHash()).isEqualTo(hash(token)).isNotEqualTo(token);
+        assertThat(reset.getUserId()).isEqualTo(user.getUserId());
+        assertThat(reset.getExpiresAt()).isBetween(before.plusSeconds(900), Instant.now().plusSeconds(900));
+        assertThat(reset.isUsed()).isFalse();
+        assertThat(reset.getUsedAt()).isNull();
+    }
+
+    @Test
+    void forgotWithinCooldownChecksUnderUserLockAndSuppressesIssuance() {
+        when(users.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
+        when(resets.existsByUserIdAndCreatedAtAfter(eq(user.getUserId()), any(Instant.class))).thenReturn(true);
+        Instant before = Instant.now();
+
+        service.forgotPassword(new ForgotPasswordRequest("  STUDENT@EXAMPLE.COM  "));
+
+        var cutoff = ArgumentCaptor.forClass(Instant.class);
+        var order = inOrder(users, resets);
+        order.verify(users).findByEmailForUpdate(user.getEmail());
+        order.verify(resets).existsByUserIdAndCreatedAtAfter(eq(user.getUserId()), cutoff.capture());
+        assertThat(cutoff.getValue()).isBetween(before.minusSeconds(60), Instant.now().minusSeconds(60));
+        verify(resets, never()).save(any());
+        verifyNoInteractions(encoder, notifications);
     }
 
     @Test
     void forgotUnknownEmailDoesNotIssueToken() {
-        when(users.findByEmail(user.getEmail())).thenReturn(Optional.empty());
+        when(users.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.empty());
         service.forgotPassword(new ForgotPasswordRequest(user.getEmail()));
         verifyNoInteractions(resets, encoder, notifications);
     }
@@ -86,7 +99,7 @@ class PasswordResetServiceTest {
     @EnumSource(value = UserStatus.class, names = {"SUSPENDED", "DEACTIVATED"})
     void forgotNonActiveUserDoesNotIssueToken(UserStatus status) {
         user.setStatus(status);
-        when(users.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        when(users.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
         service.forgotPassword(new ForgotPasswordRequest(user.getEmail()));
         verifyNoInteractions(resets, encoder, notifications);
     }

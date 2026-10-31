@@ -29,6 +29,7 @@ import java.util.HexFormat;
 @RequiredArgsConstructor
 public class PasswordResetServiceImpl implements PasswordResetService {
     private static final Duration TOKEN_LIFETIME = Duration.ofMinutes(15);
+    private static final Duration REQUEST_COOLDOWN = Duration.ofMinutes(1);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final UserRepository userRepository;
@@ -41,8 +42,14 @@ public class PasswordResetServiceImpl implements PasswordResetService {
     @Async
     @Transactional
     public void forgotPassword(ForgotPasswordRequest request) {
-        User user = userRepository.findByEmail(request.getEmail()).orElse(null);
+        // Serialize issuance for this normalized email, including across application instances.
+        User user = userRepository.findByEmailForUpdate(request.getEmail()).orElse(null);
         if (user == null || user.getStatus() != UserStatus.ACTIVE) {
+            return;
+        }
+
+        Instant now = Instant.now();
+        if (passwordResetRepository.existsByUserIdAndCreatedAtAfter(user.getUserId(), now.minus(REQUEST_COOLDOWN))) {
             return;
         }
 
@@ -51,7 +58,7 @@ public class PasswordResetServiceImpl implements PasswordResetService {
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         passwordResetRepository.save(PasswordReset.builder()
                 .userId(user.getUserId()).tokenHash(hashToken(token))
-                .expiresAt(Instant.now().plus(TOKEN_LIFETIME)).build());
+                .expiresAt(now.plus(TOKEN_LIFETIME)).build());
         notifications.send(user.getEmail(), token);
     }
 

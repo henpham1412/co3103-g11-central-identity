@@ -233,18 +233,24 @@ the nested `profile`, or `profile: null` when no optional profile row exists. Th
 alias of this response; both routes also support the `/api/v1` prefix.
 `PATCH /users/me` preserves omitted fields. Explicit `null` clears `avatar_url`, `bio`,
 `phone_number`, `date_of_birth`, `locale`, or `timezone`; `full_name: null` preserves the required name.
+The returned `updated_at` is the flushed profile timestamp and exactly matches the stored value.
 Stored profile text rejects U+0000. `date_of_birth` must be between `1900-01-01` and today,
 inclusive. These field constraints return HTTP 400 / `VALIDATION_ERROR` with field details.
 
 Password recovery is available at `POST /auth/forgot-password` and `POST /auth/reset-password`,
 including their `/api/v1/auth` aliases. Both routes are public. Forgot-password accepts `email`
 and always acknowledges valid input with the same message, regardless of account existence or status.
+Requests for the same normalized email within one minute of the last issued token keep that
+acknowledgement but issue no new token or email, even if the previous token was consumed.
+The cooldown is checked under a database row lock so concurrent requests share the same limit.
 Account lookup, token persistence, and reset-link delivery run asynchronously so account-dependent work
-does not delay the HTTP acknowledgement. The current worker queue is in memory; queued requests
-are not durable across a process restart. After the token transaction commits, delivery is
+does not delay the HTTP acknowledgement. The application executor has eight workers and a queue
+capacity of 100; rejected recovery requests retain the generic acknowledgement. The queue is in memory;
+queued requests are not durable across a process restart. After the token transaction commits, delivery is
 submitted as a separate task to the application executor, allowing the transaction to release
 its database connection even if SMTP stalls. A rejected submission is logged without attempting
-SMTP on the committing thread; the user can request another email. Configure `app.reset-password.base-url`
+SMTP on the committing thread; the user can request another email after the cooldown.
+Configure `app.reset-password.base-url`
 (`APP_RESET_PASSWORD_BASE_URL` in the environment); it defaults to
 `http://localhost:3000/reset-password`. Links have the form `<base-url>?token=<token>`.
 Set `MAIL_USERNAME` to the sending Gmail address and `MAIL_PASSWORD` to its app password.

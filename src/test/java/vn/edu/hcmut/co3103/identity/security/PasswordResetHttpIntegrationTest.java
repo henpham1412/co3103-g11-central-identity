@@ -134,14 +134,100 @@ class PasswordResetHttpIntegrationTest {
         assertThat(known.statusCode()).isEqualTo(200);
         assertThat(unknown.statusCode()).isEqualTo(200);
         assertThat(known.body()).isEqualTo(unknown.body());
-        verify(users, timeout(10000)).findByEmail(unknownEmail);
-        verify(users, timeout(10000)).findByEmail(user.getEmail());
+        verify(users, timeout(10000)).findByEmailForUpdate(unknownEmail);
+        verify(users, timeout(10000)).findByEmailForUpdate(user.getEmail());
         awaitIdle();
         var issued = resets.findByUserIdOrderByCreatedAtDesc(user.getUserId());
         assertThat(issued).hasSize(status == UserStatus.ACTIVE ? 1 : 0);
         assertThat(mailbox.getMessages()).hasSize(status == UserStatus.ACTIVE ? 1 : 0);
         assertThat(mailbox.getMessages()).allSatisfy(message -> assertThat(message.getTo()).containsExactly(user.getEmail()));
         if (status != UserStatus.ACTIVE) verifyNoInteractions(notifications);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/auth", "/api/v1/auth"})
+    void cooldownSuppressesNormalizedDuplicatesAndAllowsRecoveryAfterExpiry(String prefix) throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        String token = requestToken(prefix, user);
+        // Consuming the token must not allow another email within the cooldown.
+        assertThat(post(prefix + "/reset-password", resetBody(token, NEW_PASSWORD)).statusCode()).isEqualTo(200);
+        String body = "{\"email\":\"  " + user.getEmail().toUpperCase(java.util.Locale.ROOT) + "  \"}";
+        var duplicate = post(prefix + "/forgot-password", body);
+        var unknown = post(prefix + "/forgot-password", "{\"email\":\"unknown@example.com\"}");
+        assertThat(duplicate.statusCode()).isEqualTo(200);
+        assertThat(duplicate.body()).isEqualTo(unknown.body());
+        awaitIdle();
+        assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
+        assertThat(mailbox.getMessages()).hasSize(1);
+
+        jdbc.update("UPDATE password_resets SET created_at = CURRENT_TIMESTAMP - INTERVAL '61 seconds' WHERE user_id = ?",
+                user.getUserId());
+        assertThat(post(prefix + "/forgot-password", body).body()).isEqualTo(duplicate.body());
+        awaitIdle();
+        assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(2)
+                .extracting(PasswordReset::getTokenHash).doesNotHaveDuplicates();
+        assertThat(mailbox.getMessages()).hasSize(2);
+    }
+
+    @Test
+    void concurrentRecoveryRequestsIssueOnlyOneTokenAndEmail() throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        var start = new CountDownLatch(1);
+        try (var workers = Executors.newFixedThreadPool(6)) {
+            var requests = new ArrayList<java.util.concurrent.Future<HttpResponse<String>>>();
+            for (int i = 0; i < 6; i++) {
+                String path = i % 2 == 0 ? "/auth/forgot-password" : "/api/v1/auth/forgot-password";
+                String email = i % 2 == 0 ? user.getEmail() : "  " + user.getEmail().toUpperCase(java.util.Locale.ROOT) + "  ";
+                requests.add(workers.submit(() -> {
+                    start.await();
+                    return post(path, "{\"email\":\"" + email + "\"}");
+                }));
+            }
+            start.countDown();
+            for (var request : requests) {
+                var response = request.get(15, TimeUnit.SECONDS);
+                assertThat(response.statusCode()).isEqualTo(200);
+                assertThat(mapper.readTree(response.body()).get("message").asText()).isEqualTo(FORGOT_MESSAGE);
+            }
+        }
+        awaitIdle();
+        assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
+        assertThat(mailbox.getMessages()).hasSize(1);
+    }
+
+    @Test
+    void saturatedExecutorStillAcknowledgesRecoveryWithoutIssuingToken() throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        assertThat(executor.getMaxPoolSize()).isEqualTo(8);
+        assertThat(executor.getQueueCapacity()).isEqualTo(100);
+        var entered = new CountDownLatch(8);
+        var release = new CountDownLatch(1);
+        try {
+            for (int i = 0; i < 8; i++) {
+                executor.execute(() -> {
+                    entered.countDown();
+                    try {
+                        assertThat(release.await(15, TimeUnit.SECONDS)).isTrue();
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(exception);
+                    }
+                });
+            }
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            for (int i = 0; i < 100; i++) executor.execute(() -> {});
+            for (String email : List.of(user.getEmail(), "unknown@example.com")) {
+                var response = post("/auth/forgot-password", "{\"email\":\"" + email + "\"}");
+                assertThat(response.statusCode()).isEqualTo(200);
+                assertThat(mapper.readTree(response.body()).get("message").asText()).isEqualTo(FORGOT_MESSAGE);
+            }
+            verifyNoInteractions(notifications);
+            assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).isEmpty();
+            assertThat(mailbox.getMessages()).isEmpty();
+        } finally {
+            release.countDown();
+            awaitIdle();
+        }
     }
 
     @ParameterizedTest
@@ -210,7 +296,7 @@ class PasswordResetHttpIntegrationTest {
             entered.countDown();
             assertThat(release.await(10, TimeUnit.SECONDS)).isTrue();
             return Optional.empty();
-        }).when(users).findByEmail(email);
+        }).when(users).findByEmailForUpdate(email);
         try {
             var response = client.sendAsync(request("/auth/forgot-password", "{\"email\":\"" + email + "\"}"),
                     HttpResponse.BodyHandlers.ofString());
@@ -224,7 +310,8 @@ class PasswordResetHttpIntegrationTest {
     @ParameterizedTest
     @ValueSource(ints = {1, 2, 4})
     void stalledSmtpDeliveryReleasesAllDatabaseConnections(int requestCount) throws Exception {
-        User user = createUser(UserStatus.ACTIVE);
+        var recipients = new ArrayList<User>();
+        for (int i = 0; i < requestCount; i++) recipients.add(createUser(UserStatus.ACTIVE));
         var entered = new CountDownLatch(requestCount);
         var release = new CountDownLatch(1);
         doAnswer(invocation -> {
@@ -234,7 +321,7 @@ class PasswordResetHttpIntegrationTest {
         }).when(mailbox).send(any(SimpleMailMessage.class));
 
         try {
-            for (int request = 0; request < requestCount; request++) {
+            for (User user : recipients) {
                 assertThat(post("/auth/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}").statusCode())
                         .isEqualTo(200);
             }
@@ -245,7 +332,9 @@ class PasswordResetHttpIntegrationTest {
                         .as("committed reset transactions release their connections while SMTP is stalled").isZero();
                 assertThat(dataSource.getHikariPoolMXBean().getIdleConnections()).isEqualTo(2);
             });
-            assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(requestCount);
+            for (User user : recipients) {
+                assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
+            }
             assertThat(mailbox.getMessages()).isEmpty();
 
             // Borrow the entire real Hikari pool and execute SQL before allowing SMTP to finish.
@@ -289,7 +378,7 @@ class PasswordResetHttpIntegrationTest {
         var unknown = post(prefix + "/forgot-password", "{\"email\":\"unknown@example.com\"}");
         assertThat(unknown.statusCode()).isEqualTo(response.statusCode());
         assertThat(unknown.body()).isEqualTo(response.body());
-        verify(users, timeout(10000)).findByEmail("unknown@example.com");
+        verify(users, timeout(10000)).findByEmailForUpdate("unknown@example.com");
     }
 
     @Test
