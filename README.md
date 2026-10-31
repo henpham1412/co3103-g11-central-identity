@@ -183,11 +183,12 @@ Tokens issued before this contract that omit `clientId` require login again.
 Authentication request and response JSON uses snake_case. Registration accepts `email`, `password`,
 `full_name`, and optional `client_id`, and returns `message`, `user_id`, `email`, `full_name`, and `status`.
 Login accepts `email`, `password`, and optional `client_id` / `redirect_uri`. A supplied client must be
-registered and active; a supplied redirect URI must exactly match one of that client's registered URIs.
+registered and active, and requires a redirect URI that exactly matches one of that client's registered URIs.
 A redirect URI without a client is rejected. Omitting both selects the `central-identity` context.
 Login returns `access_token`, `token_type` (`Bearer`), `expires_in` (seconds), `client_id`, and a nested
 `user` containing `user_id`, `email`, `full_name`, and `status`. JWT claim names and the `/users/me`
-response contract are unchanged. Errors include a stable machine-readable `code`.
+response contract are unchanged. Errors include a stable machine-readable `code`; optional details use
+`locked_until` and `validation_errors`, with snake_case validation keys such as `full_name` and `client_id`.
 
 The failed-login policy defaults to 5 attempts and a 15-minute lockout. Configure
 `auth.login.max-failed-attempts` / `AUTH_LOGIN_MAX_FAILED_ATTEMPTS` and

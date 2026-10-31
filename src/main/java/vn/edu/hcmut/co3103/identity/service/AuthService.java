@@ -152,8 +152,8 @@ public class AuthService {
         var client = lmsClientRepository.findByClientIdAndIsActiveTrue(clientId)
                 .orElseThrow(InvalidClientException::new);
         // Compare the complete registered value; do not normalize or accept prefix matches.
-        if (redirectUri != null && (redirectUri.isBlank() || client.getRedirectUris() == null
-                || !client.getRedirectUris().contains(redirectUri))) {
+        if (redirectUri == null || redirectUri.isBlank() || client.getRedirectUris() == null
+                || !client.getRedirectUris().contains(redirectUri)) {
             throw new InvalidRedirectUriException();
         }
         return clientId;

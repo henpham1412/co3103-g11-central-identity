@@ -333,12 +333,10 @@ class AuthServiceTest {
         verify(userRepository).findByEmailForUpdate(EMAIL);
     }
 
-    @ParameterizedTest
-    @NullSource
-    @ValueSource(strings = "https://lms.example.com/auth/callback")
-    void loginPassesValidatedClientIdToTokenGeneration(String redirectUri) {
+    @Test
+    void loginPassesValidatedClientIdToTokenGeneration() {
         loginRequest.setClientId("lms-client");
-        loginRequest.setRedirectUri(redirectUri);
+        loginRequest.setRedirectUri("https://lms.example.com/auth/callback");
         when(lmsClientRepository.findByClientIdAndIsActiveTrue("lms-client"))
                 .thenReturn(Optional.of(LmsClient.builder().clientId("lms-client")
                         .redirectUris(List.of("https://lms.example.com/auth/callback")).build()));
@@ -364,10 +362,11 @@ class AuthServiceTest {
     }
 
     @ParameterizedTest
+    @NullSource
     @ValueSource(strings = {"", " ", "https://evil.example/callback", "https://lms.example.com/auth/callback/",
             "https://lms.example.com/auth/callback?next=evil", "https://lms.example.com/auth/callback#fragment",
             "https://LMS.example.com/auth/callback", "https://lms.example.com/auth/%63allback"})
-    void loginRejectsRedirectThatDoesNotExactlyMatchRegistration(String redirectUri) {
+    void loginRejectsMissingOrUnregisteredRedirectBeforeAuthentication(String redirectUri) {
         loginRequest.setClientId("lms-client");
         loginRequest.setRedirectUri(redirectUri);
         when(lmsClientRepository.findByClientIdAndIsActiveTrue("lms-client"))

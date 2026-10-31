@@ -1,6 +1,7 @@
 package vn.edu.hcmut.co3103.identity.exception;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -27,6 +28,10 @@ public class ApiErrorResponse {
     private Instant timestamp = Instant.now();
 
     private String path;
+
+    @JsonProperty("locked_until")
     private Instant lockedUntil;
+
+    @JsonProperty("validation_errors")
     private Map<String, String> validationErrors;
 }

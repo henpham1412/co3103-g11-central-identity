@@ -117,15 +117,12 @@ class AuthHttpIntegrationTest {
         assertThat(duplicate.get("code").asText()).isEqualTo("EMAIL_ALREADY_REGISTERED");
     }
 
-    @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void activeClientIssuesTokenWithValidatedContext(boolean includeRedirect) throws Exception {
+    @Test
+    void activeClientIssuesTokenWithValidatedContext() throws Exception {
         User user = createUser();
         String clientId = createClient(true);
         String fields = ",\"client_id\":\"" + clientId + "\"";
-        if (includeRedirect) {
-            fields += ",\"redirect_uri\":\"https://lms.example.com/auth/callback\"";
-        }
+        fields += ",\"redirect_uri\":\"https://lms.example.com/auth/callback\"";
         HttpResponse<String> login = send("POST", LOGIN_PATH,
                 loginBody(user.getEmail(), PASSWORD).replace("}", fields + "}"), "application/json", null);
         assertThat(login.statusCode()).as(login.body()).isEqualTo(200);
@@ -138,7 +135,8 @@ class AuthHttpIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"missing", "inactive", "redirect", "redirectOnly", "emptyRedirect", "prefixRedirect"})
+    @ValueSource(strings = {"missing", "inactive", "redirect", "redirectOnly", "emptyRedirect", "prefixRedirect",
+            "missingRedirect", "nullRedirect"})
     void invalidLmsContextCannotIssueTokenOrChangeLoginState(String scenario) throws Exception {
         User user = createUser();
         user.setFailedLoginAttempts(2);
@@ -147,6 +145,7 @@ class AuthHttpIntegrationTest {
                 : createClient(!scenario.equals("inactive"));
         String fields = ",\"client_id\":\"" + clientId + "\"";
         switch (scenario) {
+            case "nullRedirect" -> fields += ",\"redirect_uri\":null";
             case "redirect" -> fields += ",\"redirect_uri\":\"https://evil.example/callback\"";
             case "prefixRedirect" -> fields += ",\"redirect_uri\":\"https://lms.example.com/auth/callback/evil\"";
             case "redirectOnly" -> fields = ",\"redirect_uri\":\"https://lms.example.com/auth/callback\"";
@@ -307,7 +306,7 @@ class AuthHttpIntegrationTest {
             JsonNode wrong = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), "wrong-password"),
                     "application/json", null), 401, LOGIN_PATH);
             assertThat(wrong.get("message").asText()).isEqualTo("Invalid email or password");
-            assertThat(wrong.has("lockedUntil")).isFalse();
+            assertThat(wrong.has("locked_until")).isFalse();
             User persisted = userRepository.findById(user.getUserId()).orElseThrow();
             assertThat(persisted.getFailedLoginAttempts()).isEqualTo(attempts);
             assertThat(persisted.getLockedUntil()).isAfter(Instant.now());
@@ -315,7 +314,7 @@ class AuthHttpIntegrationTest {
         }
         JsonNode correct = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), PASSWORD),
                 "application/json", null), 423, LOGIN_PATH);
-        assertThat(correct.get("lockedUntil").asText()).isNotBlank();
+        assertThat(correct.get("locked_until").asText()).isNotBlank();
         assertThat(userRepository.findById(user.getUserId()).orElseThrow().getFailedLoginAttempts()).isEqualTo(6);
     }
 
@@ -368,7 +367,7 @@ class AuthHttpIntegrationTest {
         assertThat(atLimit.getBytes(java.nio.charset.StandardCharsets.UTF_8)).hasSize(72);
         JsonNode error = assertError(send("POST", REGISTER_PATH, registerBody(email, atLimit + "a"),
                 "application/json", null), 400, REGISTER_PATH);
-        assertThat(error.get("validationErrors").get("password").asText())
+        assertThat(error.get("validation_errors").get("password").asText())
                 .isEqualTo("Password must not exceed 72 UTF-8 bytes");
         assertThat(countUsers(email)).isZero();
 
@@ -387,7 +386,7 @@ class AuthHttpIntegrationTest {
         assertThat(overLimit.getBytes(java.nio.charset.StandardCharsets.UTF_8)).hasSize(73);
         JsonNode loginError = assertError(send("POST", LOGIN_PATH, loginBody(email, overLimit),
                 "application/json", null), 400, LOGIN_PATH);
-        assertThat(loginError.get("validationErrors").get("password").asText())
+        assertThat(loginError.get("validation_errors").get("password").asText())
                 .isEqualTo("Password must not exceed 72 bytes");
         User persisted = userRepository.findByEmail(email).orElseThrow();
         assertThat(persisted.getFailedLoginAttempts()).isZero();
@@ -417,6 +416,8 @@ class AuthHttpIntegrationTest {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(status);
         assertThat(response.headers().firstValue("Content-Type").orElse("")).startsWith("application/json");
         JsonNode error = objectMapper.readTree(response.body());
+        assertThat(error.has("lockedUntil")).isFalse();
+        assertThat(error.has("validationErrors")).isFalse();
         assertThat(error.get("status").asInt()).isEqualTo(status);
         assertThat(error.get("error").asText()).isEqualTo(HttpStatus.valueOf(status).getReasonPhrase());
         assertThat(error.get("message").asText()).isNotBlank();

@@ -79,8 +79,8 @@ class GlobalExceptionHandlerTest {
         when(authService.register(any(RegisterRequest.class))).thenThrow(new DuplicateEmailException(message));
 
         expectError(REGISTER_PATH, REGISTER_JSON, 409, "Conflict", message)
-                .andExpect(jsonPath("$.lockedUntil").doesNotExist())
-                .andExpect(jsonPath("$.validationErrors").doesNotExist());
+                .andExpect(jsonPath("$.locked_until").doesNotExist())
+                .andExpect(jsonPath("$.validation_errors").doesNotExist());
     }
 
     @Test
@@ -89,8 +89,8 @@ class GlobalExceptionHandlerTest {
                 new DataIntegrityViolationException("duplicate key violates users_email_key; SQL: insert into users"));
 
         expectError(REGISTER_PATH, REGISTER_JSON, 409, "Conflict", "Data conflicts with an existing record")
-                .andExpect(jsonPath("$.lockedUntil").doesNotExist())
-                .andExpect(jsonPath("$.validationErrors").doesNotExist());
+                .andExpect(jsonPath("$.locked_until").doesNotExist())
+                .andExpect(jsonPath("$.validation_errors").doesNotExist());
     }
 
     @ParameterizedTest
@@ -218,7 +218,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void validationAndMalformedJsonErrorsIgnoreUnsupportedAcceptHeader() throws Exception {
         expectError(REGISTER_PATH, "{}", 400, "Bad Request", "Validation failed", "application/xml")
-                .andExpect(jsonPath("$.validationErrors", aMapWithSize(3)));
+                .andExpect(jsonPath("$.validation_errors", aMapWithSize(3)));
         expectError(REGISTER_PATH, "{", 400, "Bad Request",
                 "Required request body is missing or malformed", "application/xml");
         verifyNoInteractions(authService);
@@ -240,7 +240,7 @@ class GlobalExceptionHandlerTest {
                 .thenThrow(new AccountLockedException(message, lockedUntil));
 
         expectError(LOGIN_PATH, LOGIN_JSON, 423, "Locked", message)
-                .andExpect(jsonPath("$.lockedUntil").value(lockedUntil.toString()));
+                .andExpect(jsonPath("$.locked_until").value(lockedUntil.toString()));
     }
 
     @Test
@@ -258,11 +258,25 @@ class GlobalExceptionHandlerTest {
                 """;
 
         expectError(REGISTER_PATH, invalidRequest, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors", aMapWithSize(3)))
-                .andExpect(jsonPath("$.validationErrors.email").value("Invalid email format"))
-                .andExpect(jsonPath("$.validationErrors.password")
+                .andExpect(jsonPath("$.validation_errors", aMapWithSize(3)))
+                .andExpect(jsonPath("$.validation_errors.email").value("Invalid email format"))
+                .andExpect(jsonPath("$.validation_errors.password")
                         .value("Password must be between 8 and 128 characters"))
-                .andExpect(jsonPath("$.validationErrors.fullName").value("Full name is required"));
+                .andExpect(jsonPath("$.validation_errors.full_name").value("Full name is required"))
+                .andExpect(jsonPath("$.validation_errors.fullName").doesNotExist());
+        verifyNoInteractions(authService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
+    void invalidClientIdUsesSnakeCaseValidationKey(String path) throws Exception {
+        String requestBody = (REGISTER_PATH.equals(path) ? REGISTER_JSON : LOGIN_JSON)
+                .replace("}", ",\"client_id\":\"invalid client\"}");
+
+        expectError(path, requestBody, 400, "Bad Request", "Validation failed")
+                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
+                .andExpect(jsonPath("$.validation_errors.client_id").value("Client ID must not contain whitespace"))
+                .andExpect(jsonPath("$.validation_errors.clientId").doesNotExist());
         verifyNoInteractions(authService);
     }
 
@@ -273,17 +287,17 @@ class GlobalExceptionHandlerTest {
                 """;
 
         expectError(REGISTER_PATH, invalidRequest, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors", aMapWithSize(1)))
-                .andExpect(jsonPath("$.validationErrors.password").isNotEmpty());
+                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
+                .andExpect(jsonPath("$.validation_errors.password").isNotEmpty());
         verifyNoInteractions(authService);
     }
 
     @Test
     void invalidLoginReturnsBadRequestBeforeCallingService() throws Exception {
         expectError(LOGIN_PATH, "{}", 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors", aMapWithSize(2)))
-                .andExpect(jsonPath("$.validationErrors.email").value("Email is required"))
-                .andExpect(jsonPath("$.validationErrors.password").value("Password is required"));
+                .andExpect(jsonPath("$.validation_errors", aMapWithSize(2)))
+                .andExpect(jsonPath("$.validation_errors.email").value("Email is required"))
+                .andExpect(jsonPath("$.validation_errors.password").value("Password is required"));
         verifyNoInteractions(authService);
     }
 
@@ -312,6 +326,8 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.error").value(error))
                 .andExpect(jsonPath("$.message").value(message))
                 .andExpect(jsonPath("$.path").value(path))
+                .andExpect(jsonPath("$.lockedUntil").doesNotExist())
+                .andExpect(jsonPath("$.validationErrors").doesNotExist())
                 .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
 

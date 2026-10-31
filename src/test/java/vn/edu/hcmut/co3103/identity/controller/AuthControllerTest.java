@@ -182,7 +182,7 @@ class AuthControllerTest {
         String requestBody = REGISTER_JSON.replace(FULL_NAME, "Test" + escapedControl + " Student");
 
         expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors.fullName").value("Full name contains invalid characters"));
+                .andExpect(jsonPath("$.validation_errors.full_name").value("Full name contains invalid characters"));
         verifyNoInteractions(authService, userRepository);
     }
 
@@ -211,16 +211,16 @@ class AuthControllerTest {
             {"email":"invalid-email","password":"Password123!","full_name":"Test Student"} | email | Invalid email format
             {"email":"student@example.com","password":"1234567","full_name":"Test Student"} | password | Password must be between 8 and 128 characters
             {"email":"student@example.com","full_name":"Test Student"} | password | Password is required
-            {"email":"student@example.com","password":"Password123!"} | fullName | Full name is required
-            {"email":"student@example.com","password":"Password123!","full_name":null} | fullName | Full name is required
-            {"email":"student@example.com","password":"Password123!","full_name":""} | fullName | Full name is required
-            {"email":"student@example.com","password":"Password123!","full_name":"   "} | fullName | Full name is required
+            {"email":"student@example.com","password":"Password123!"} | full_name | Full name is required
+            {"email":"student@example.com","password":"Password123!","full_name":null} | full_name | Full name is required
+            {"email":"student@example.com","password":"Password123!","full_name":""} | full_name | Full name is required
+            {"email":"student@example.com","password":"Password123!","full_name":"   "} | full_name | Full name is required
             """)
     void registerRejectsInvalidInputBeforeCallingService(String requestBody, String field, String message)
             throws Exception {
         expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors", aMapWithSize(1)))
-                .andExpect(jsonPath("$.validationErrors." + field).value(message));
+                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
+                .andExpect(jsonPath("$.validation_errors." + field).value(message));
         verifyNoInteractions(authService);
     }
 
@@ -260,7 +260,7 @@ class AuthControllerTest {
         int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         String password = character.repeat(72 / bytesPerCharacter) + "b";
         expectError(LOGIN_PATH, LOGIN_JSON.replace(PASSWORD, password), 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors.password").value("Password must not exceed 72 bytes"))
+                .andExpect(jsonPath("$.validation_errors.password").value("Password must not exceed 72 bytes"))
                 .andExpect(jsonPath("$.access_token").doesNotExist())
                 .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService, userRepository);
@@ -300,7 +300,7 @@ class AuthControllerTest {
         String password = character.repeat(repetitions);
         String requestBody = REGISTER_JSON.replace(PASSWORD, password);
         expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors.password").value("Password must not exceed 72 UTF-8 bytes"))
+                .andExpect(jsonPath("$.validation_errors.password").value("Password must not exceed 72 UTF-8 bytes"))
                 .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService, userRepository);
     }
@@ -397,7 +397,7 @@ class AuthControllerTest {
                 .thenThrow(new AccountLockedException(message, lockedUntil));
 
         expectError(LOGIN_PATH, LOGIN_JSON, 423, "Locked", message)
-                .andExpect(jsonPath("$.lockedUntil").value(lockedUntil.toString()));
+                .andExpect(jsonPath("$.locked_until").value(lockedUntil.toString()));
         verify(authService).login(any(LoginRequest.class));
     }
 
@@ -424,17 +424,17 @@ class AuthControllerTest {
     void loginRejectsInvalidInputBeforeCallingService(String requestBody, String field, String message)
             throws Exception {
         expectError(LOGIN_PATH, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors", aMapWithSize(1)))
-                .andExpect(jsonPath("$.validationErrors." + field).value(message));
+                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
+                .andExpect(jsonPath("$.validation_errors." + field).value(message));
         verifyNoInteractions(authService);
     }
 
     @Test
     void loginRejectsMissingEmailAndPassword() throws Exception {
         expectError(LOGIN_PATH, "{}", 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors", aMapWithSize(2)))
-                .andExpect(jsonPath("$.validationErrors.email").value("Email is required"))
-                .andExpect(jsonPath("$.validationErrors.password").value("Password is required"));
+                .andExpect(jsonPath("$.validation_errors", aMapWithSize(2)))
+                .andExpect(jsonPath("$.validation_errors.email").value("Email is required"))
+                .andExpect(jsonPath("$.validation_errors.password").value("Password is required"));
         verifyNoInteractions(authService);
     }
 
@@ -445,8 +445,8 @@ class AuthControllerTest {
 
         // Whitespace can violate both constraints; their evaluation order is unspecified.
         expectError(path, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validationErrors", aMapWithSize(1)))
-                .andExpect(jsonPath("$.validationErrors.email",
+                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
+                .andExpect(jsonPath("$.validation_errors.email",
                         isOneOf("Email is required", "Invalid email format")));
         verifyNoInteractions(authService);
     }
@@ -525,6 +525,8 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.error").value(error))
                 .andExpect(jsonPath("$.message").value(message))
                 .andExpect(jsonPath("$.path").value(path))
+                .andExpect(jsonPath("$.lockedUntil").doesNotExist())
+                .andExpect(jsonPath("$.validationErrors").doesNotExist())
                 .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
 }

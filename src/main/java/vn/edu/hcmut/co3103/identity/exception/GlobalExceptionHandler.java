@@ -16,6 +16,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import tools.jackson.databind.util.NamingStrategyImpls;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -110,7 +111,8 @@ public class GlobalExceptionHandler {
             MethodArgumentNotValidException exception, HttpServletRequest request) {
         Map<String, String> validationErrors = new LinkedHashMap<>();
         exception.getBindingResult().getFieldErrors().forEach(error ->
-                validationErrors.putIfAbsent(error.getField(), error.getDefaultMessage()));
+                validationErrors.putIfAbsent(NamingStrategyImpls.SNAKE_CASE.translate(error.getField()),
+                        error.getDefaultMessage()));
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
