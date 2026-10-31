@@ -227,6 +227,23 @@ are available at `/auth/register`, `/auth/login`, and `/users/me`, with compatib
 unknown fields, duplicate keys, trailing values, and implicit number/boolean-to-string conversions
 are rejected before business logic. Passwords require at least 8 characters and at most 72 UTF-8 bytes.
 
+Password recovery is available at `POST /auth/forgot-password` and `POST /auth/reset-password`,
+including their `/api/v1/auth` aliases. Both routes are public. Forgot-password accepts `email`
+and always acknowledges valid input with the same message, regardless of account existence or status.
+Account lookup, token persistence, and the email stub run asynchronously so account-dependent work
+does not delay the HTTP acknowledgement. The current worker queue is in memory; queued requests
+are not durable across a process restart. Email delivery is simulated and logs neither the recipient
+nor the token; an actual notification integration is still required to send recovery instructions.
+
+Only ACTIVE users receive a token. Tokens contain 32 secure random bytes encoded as base64url,
+expire after 15 minutes, and are stored only as SHA-256 hashes. Reset-password accepts `token`
+and `new_password`, uses the configured BCrypt encoder, and consumes the token atomically with
+the password update. Row locks prevent concurrent token reuse and password overwrites by login.
+Migration V5 adds `used_at`; legacy `is_used` flags remain authoritative for previously consumed tokens.
+Unknown, expired, or consumed tokens all return HTTP 400 with code `INVALID_OR_EXPIRED_RESET_TOKEN`
+and message `Invalid or expired password reset token`. CI-3 Commit 2 uses the requested HTTP 400
+instead of DOC-05's proposed 401 for this error. Existing JWTs remain valid until expiration.
+
 ## 6. Maven Wrapper Configuration
 
 The repository uses the following settings in `.mvn/wrapper/maven-wrapper.properties`:

@@ -22,6 +22,39 @@ class PasswordResetMigrationIntegrationTest {
     private JdbcTemplate jdbc;
 
     @Test
+    void upgradesV4WithoutReactivatingLegacyConsumedTokens() {
+        String schema = "reset_timestamp_migration_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).target("4").load().migrate();
+            var history = jdbc.queryForList("SELECT version, checksum FROM " + schema
+                    + ".flyway_schema_history WHERE version IS NOT NULL ORDER BY installed_rank");
+            UUID userId = UUID.randomUUID();
+            jdbc.update("INSERT INTO " + schema + ".users (user_id, email, password_hash, full_name) VALUES (?, ?, ?, ?)",
+                    userId, "migration@example.com", "test-hash", "Migration Test");
+            for (boolean used : new boolean[]{false, true}) {
+                jdbc.update("INSERT INTO " + schema + ".password_resets (reset_id, user_id, token_hash, expires_at, is_used)"
+                                + " VALUES (?, ?, ?, CURRENT_TIMESTAMP + INTERVAL '15 minutes', ?)",
+                        UUID.randomUUID(), userId, "legacy-" + used, used);
+            }
+            var flyway = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).target("5").load();
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+            flyway.validate();
+            assertThat(jdbc.queryForList("SELECT version, checksum FROM " + schema
+                    + ".flyway_schema_history WHERE version IN ('1', '2', '3', '4') ORDER BY installed_rank")).isEqualTo(history);
+            for (boolean used : new boolean[]{false, true}) {
+                assertThat(jdbc.queryForObject("SELECT is_used FROM " + schema + ".password_resets WHERE token_hash = ?",
+                        Boolean.class, "legacy-" + used)).isEqualTo(used);
+            }
+            // Historical use times cannot be inferred; no fabricated timestamps are backfilled.
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM " + schema
+                    + ".password_resets WHERE used_at IS NULL", Integer.class)).isEqualTo(2);
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
+    @Test
     void upgradesV3WithBothIndexesAndAllowsIndexScriptToRunAgain() throws Exception {
         String schema = "password_reset_migration_" + UUID.randomUUID().toString().replace("-", "");
         try {

@@ -25,6 +25,14 @@ import java.util.Map;
 @Slf4j
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(InvalidPasswordResetTokenException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidPasswordResetToken(
+            InvalidPasswordResetTokenException exception, HttpServletRequest request) {
+        return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.BAD_REQUEST, exception.getMessage(), request)
+                        .code("INVALID_OR_EXPIRED_RESET_TOKEN").build());
+    }
+
     @ExceptionHandler(DuplicateEmailException.class)
     public ResponseEntity<ApiErrorResponse> handleDuplicateEmail(
             DuplicateEmailException exception, HttpServletRequest request) {

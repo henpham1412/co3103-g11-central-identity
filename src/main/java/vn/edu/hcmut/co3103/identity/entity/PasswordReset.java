@@ -42,9 +42,12 @@ public class PasswordReset {
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
 
-    // V1 and DOC-04 track consumption with is_used, not a used_at timestamp.
+    // Retain is_used for tokens consumed before V5 introduced the timestamp.
     @Column(name = "is_used", nullable = false)
     private boolean used;
+
+    @Column(name = "used_at")
+    private Instant usedAt;
 
     @JdbcTypeCode(SqlTypes.INET)
     @Column(name = "ip_requested", columnDefinition = "INET")
