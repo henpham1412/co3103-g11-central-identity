@@ -78,6 +78,37 @@ class CurrentUserHttpIntegrationTest {
         assertThat(profile.get("role").asText()).isEqualTo("USER");
         assertThat(response.headers().firstValue("Set-Cookie")).isEmpty();
 
+        // Verify GET /users/me/profile returns full profile DTO
+        HttpResponse<String> profileResponse = send("/api/v1/users/me/profile", null, token);
+        assertThat(profileResponse.statusCode()).isEqualTo(200);
+        JsonNode fullProfile = objectMapper.readTree(profileResponse.body());
+        assertThat(fullProfile.get("user_id").asText()).isEqualTo(user.getUserId().toString());
+        assertThat(fullProfile.get("email").asText()).isEqualTo(email);
+        assertThat(fullProfile.get("full_name").asText()).isEqualTo("Profile Student");
+
+        // Verify PATCH /users/me updates profile information
+        String updateBody = """
+                {
+                    "full_name": "Updated Profile Student",
+                    "bio": "Software Engineering Student",
+                    "phone_number": "+84912345678",
+                    "locale": "vi",
+                    "timezone": "Asia/Ho_Chi_Minh"
+                }
+                """;
+        var patchRequest = HttpRequest.newBuilder(URI.create("http://localhost:" + port + PATH))
+                .timeout(Duration.ofSeconds(15))
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + token)
+                .method("PATCH", HttpRequest.BodyPublishers.ofString(updateBody))
+                .build();
+        HttpResponse<String> patchResponse = client.send(patchRequest, HttpResponse.BodyHandlers.ofString());
+        assertThat(patchResponse.statusCode()).isEqualTo(200);
+        JsonNode patchResult = objectMapper.readTree(patchResponse.body());
+        assertThat(patchResult.get("message").asText()).isEqualTo("Profile updated successfully");
+        assertThat(patchResult.get("updated_at")).isNotNull();
+
         user.setFullName("Updated Profile Student");
         userRepository.saveAndFlush(user);
         HttpResponse<String> updated = send(PATH, null, token);
