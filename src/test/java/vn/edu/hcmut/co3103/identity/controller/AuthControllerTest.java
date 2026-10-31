@@ -18,6 +18,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import vn.edu.hcmut.co3103.identity.config.JwtProperties;
+import vn.edu.hcmut.co3103.identity.config.LoginPolicyProperties;
+import vn.edu.hcmut.co3103.identity.entity.LmsClient;
+import vn.edu.hcmut.co3103.identity.repository.LmsClientRepository;
 import vn.edu.hcmut.co3103.identity.config.SecurityConfig;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
@@ -67,10 +70,10 @@ class AuthControllerTest {
     private static final String PASSWORD = "Password123!";
     private static final String FULL_NAME = "Test Student";
     private static final String REGISTER_JSON = """
-            {"email":"student@example.com","password":"Password123!","fullName":"Test Student","clientId":"lms-client"}
+            {"email":"student@example.com","password":"Password123!","full_name":"Test Student","client_id":"lms-client"}
             """;
     private static final String LOGIN_JSON = """
-            {"email":"student@example.com","password":"Password123!","clientId":"lms-client"}
+            {"email":"student@example.com","password":"Password123!","client_id":"lms-client","redirect_uri":"https://lms.example.com/auth/callback"}
             """;
 
     @Autowired
@@ -91,26 +94,27 @@ class AuthControllerTest {
     @MockitoBean
     private UserRepository userRepository;
 
+    @MockitoBean
+    private LmsClientRepository lmsClientRepository;
+
     @Test
     void registerReturnsCreatedWithUserPayload() throws Exception {
-        Instant createdAt = Instant.parse("2026-10-30T10:00:00Z");
         when(authService.register(any(RegisterRequest.class))).thenReturn(RegisterResponse.builder()
                 .userId(USER_ID)
                 .email(EMAIL)
                 .fullName(FULL_NAME)
                 .status(UserStatus.ACTIVE)
-                .createdAt(createdAt)
                 .build());
 
         mockMvc.perform(post(REGISTER_PATH).contentType(MediaType.APPLICATION_JSON).content(REGISTER_JSON))
                 .andExpect(status().isCreated())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$", aMapWithSize(5)))
-                .andExpect(jsonPath("$.userId").value(USER_ID.toString()))
+                .andExpect(jsonPath("$.user_id").value(USER_ID.toString()))
                 .andExpect(jsonPath("$.email").value(EMAIL))
-                .andExpect(jsonPath("$.fullName").value(FULL_NAME))
+                .andExpect(jsonPath("$.full_name").value(FULL_NAME))
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
-                .andExpect(jsonPath("$.createdAt").value(createdAt.toString()));
+                .andExpect(jsonPath("$.message").value("User registered successfully"));
 
         verify(authService).register(argThat(request -> EMAIL.equals(request.getEmail())
                 && PASSWORD.equals(request.getPassword()) && FULL_NAME.equals(request.getFullName())
@@ -121,7 +125,11 @@ class AuthControllerTest {
     void registerAndLoginNormalizeWhitespaceAndUppercaseBeforeValidation() throws Exception {
         String rawEmail = "   STUDENT.WHITESPACE@EXAMPLE.COM   ";
         String normalizedEmail = "student.whitespace@example.com";
-        AuthService realService = new AuthService(userRepository, passwordEncoder, jwtService, jwtProperties);
+        AuthService realService = new AuthService(userRepository, passwordEncoder, jwtService, jwtProperties,
+                lmsClientRepository, new LoginPolicyProperties());
+        when(lmsClientRepository.findByClientIdAndIsActiveTrue("lms-client"))
+                .thenReturn(Optional.of(LmsClient.builder().clientId("lms-client")
+                        .redirectUris(java.util.List.of("https://lms.example.com/auth/callback")).build()));
         AtomicReference<User> savedUser = new AtomicReference<>();
         when(userRepository.saveAndFlush(any(User.class))).thenAnswer(invocation -> {
             User saved = invocation.getArgument(0);
@@ -144,11 +152,11 @@ class AuthControllerTest {
         mockMvc.perform(post(LOGIN_PATH).contentType(MediaType.APPLICATION_JSON)
                         .content(LOGIN_JSON.replace(EMAIL, rawEmail)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.email").value(normalizedEmail))
-                .andExpect(jsonPath("$.accessToken").isNotEmpty())
+                .andExpect(jsonPath("$.user.email").value(normalizedEmail))
+                .andExpect(jsonPath("$.access_token").isNotEmpty())
                 .andExpect(result -> {
                     String token = com.jayway.jsonpath.JsonPath.read(
-                            result.getResponse().getContentAsString(), "$.accessToken");
+                            result.getResponse().getContentAsString(), "$.access_token");
                     assertThat(jwtService.extractUserId(token)).isEqualTo(USER_ID.toString());
                     String jwks = mockMvc.perform(get("/.well-known/jwks.json"))
                             .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
@@ -191,22 +199,22 @@ class AuthControllerTest {
         mockMvc.perform(post(REGISTER_PATH).contentType(MediaType.APPLICATION_JSON)
                         .content(REGISTER_JSON.replace(FULL_NAME, fullName)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.fullName").value(fullName));
+                .andExpect(jsonPath("$.full_name").value(fullName));
         verify(authService).register(argThat(request -> fullName.equals(request.getFullName())));
     }
 
     @ParameterizedTest
     @CsvSource(delimiter = '|', textBlock = """
-            {"password":"Password123!","fullName":"Test Student"} | email | Email is required
-            {"email":null,"password":"Password123!","fullName":"Test Student"} | email | Email is required
-            {"email":"","password":"Password123!","fullName":"Test Student"} | email | Email is required
-            {"email":"invalid-email","password":"Password123!","fullName":"Test Student"} | email | Invalid email format
-            {"email":"student@example.com","password":"1234567","fullName":"Test Student"} | password | Password must be between 8 and 128 characters
-            {"email":"student@example.com","fullName":"Test Student"} | password | Password is required
+            {"password":"Password123!","full_name":"Test Student"} | email | Email is required
+            {"email":null,"password":"Password123!","full_name":"Test Student"} | email | Email is required
+            {"email":"","password":"Password123!","full_name":"Test Student"} | email | Email is required
+            {"email":"invalid-email","password":"Password123!","full_name":"Test Student"} | email | Invalid email format
+            {"email":"student@example.com","password":"1234567","full_name":"Test Student"} | password | Password must be between 8 and 128 characters
+            {"email":"student@example.com","full_name":"Test Student"} | password | Password is required
             {"email":"student@example.com","password":"Password123!"} | fullName | Full name is required
-            {"email":"student@example.com","password":"Password123!","fullName":null} | fullName | Full name is required
-            {"email":"student@example.com","password":"Password123!","fullName":""} | fullName | Full name is required
-            {"email":"student@example.com","password":"Password123!","fullName":"   "} | fullName | Full name is required
+            {"email":"student@example.com","password":"Password123!","full_name":null} | fullName | Full name is required
+            {"email":"student@example.com","password":"Password123!","full_name":""} | fullName | Full name is required
+            {"email":"student@example.com","password":"Password123!","full_name":"   "} | fullName | Full name is required
             """)
     void registerRejectsInvalidInputBeforeCallingService(String requestBody, String field, String message)
             throws Exception {
@@ -253,7 +261,7 @@ class AuthControllerTest {
         String password = character.repeat(72 / bytesPerCharacter) + "b";
         expectError(LOGIN_PATH, LOGIN_JSON.replace(PASSWORD, password), 400, "Bad Request", "Validation failed")
                 .andExpect(jsonPath("$.validationErrors.password").value("Password must not exceed 72 bytes"))
-                .andExpect(jsonPath("$.accessToken").doesNotExist())
+                .andExpect(jsonPath("$.access_token").doesNotExist())
                 .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService, userRepository);
     }
@@ -304,26 +312,65 @@ class AuthControllerTest {
                 .accessToken(accessToken)
                 .tokenType("Bearer")
                 .expiresIn(86400)
-                .userId(USER_ID)
-                .email(EMAIL)
-                .fullName(FULL_NAME)
-                .status(UserStatus.ACTIVE)
+                .clientId("lms-client")
+                .user(new AuthResponse.AuthUser(USER_ID, EMAIL, FULL_NAME, UserStatus.ACTIVE))
                 .build());
 
         mockMvc.perform(post(LOGIN_PATH).contentType(MediaType.APPLICATION_JSON).content(LOGIN_JSON))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$", aMapWithSize(7)))
-                .andExpect(jsonPath("$.accessToken").value(accessToken))
-                .andExpect(jsonPath("$.tokenType").value("Bearer"))
-                .andExpect(jsonPath("$.expiresIn").value(86400))
-                .andExpect(jsonPath("$.userId").value(USER_ID.toString()))
-                .andExpect(jsonPath("$.email").value(EMAIL))
-                .andExpect(jsonPath("$.fullName").value(FULL_NAME))
-                .andExpect(jsonPath("$.status").value("ACTIVE"));
+                .andExpect(jsonPath("$", aMapWithSize(5)))
+                .andExpect(jsonPath("$.access_token").value(accessToken))
+                .andExpect(jsonPath("$.token_type").value("Bearer"))
+                .andExpect(jsonPath("$.expires_in").value(86400))
+                .andExpect(jsonPath("$.client_id").value("lms-client"))
+                .andExpect(jsonPath("$.user", aMapWithSize(4)))
+                .andExpect(jsonPath("$.user.user_id").value(USER_ID.toString()))
+                .andExpect(jsonPath("$.user.email").value(EMAIL))
+                .andExpect(jsonPath("$.user.full_name").value(FULL_NAME))
+                .andExpect(jsonPath("$.user.status").value("ACTIVE"));
 
         verify(authService).login(argThat(request -> EMAIL.equals(request.getEmail())
-                && PASSWORD.equals(request.getPassword()) && "lms-client".equals(request.getClientId())));
+                && PASSWORD.equals(request.getPassword()) && "lms-client".equals(request.getClientId())
+                && "https://lms.example.com/auth/callback".equals(request.getRedirectUri())));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"full_name, fullName", "client_id, clientId"})
+    void registerRejectsCamelCaseAliases(String canonical, String alias) throws Exception {
+        expectError(REGISTER_PATH, REGISTER_JSON.replace(canonical, alias), 400, "Bad Request",
+                "Required request body is missing or malformed")
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+        verifyNoInteractions(authService, userRepository);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"client_id, clientId", "redirect_uri, redirectUri"})
+    void loginRejectsCamelCaseAliases(String canonical, String alias) throws Exception {
+        expectError(LOGIN_PATH, LOGIN_JSON.replace(canonical, alias), 400, "Bad Request",
+                "Required request body is missing or malformed")
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+        verifyNoInteractions(authService, userRepository);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"client_id", "redirect_uri"})
+    void loginRejectsDuplicateContextFields(String field) throws Exception {
+        expectError(LOGIN_PATH, LOGIN_JSON.replace("}", ",\"" + field + "\":\"duplicate\"}"),
+                400, "Bad Request", "Required request body is missing or malformed")
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+        verifyNoInteractions(authService, userRepository);
+    }
+
+    @Test
+    void invalidClientAndRedirectHaveDistinctCodes() throws Exception {
+        when(authService.login(any(LoginRequest.class)))
+                .thenThrow(new vn.edu.hcmut.co3103.identity.exception.InvalidClientException())
+                .thenThrow(new vn.edu.hcmut.co3103.identity.exception.InvalidRedirectUriException());
+        expectError(LOGIN_PATH, LOGIN_JSON, 400, "Bad Request", "Client is invalid or inactive")
+                .andExpect(jsonPath("$.code").value("INVALID_CLIENT"));
+        expectError(LOGIN_PATH, LOGIN_JSON, 400, "Bad Request", "Redirect URI is not registered for this client")
+                .andExpect(jsonPath("$.code").value("INVALID_REDIRECT_URI"));
     }
 
     @ParameterizedTest(name = "login rejects {0}")
@@ -408,7 +455,7 @@ class AuthControllerTest {
     @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
     void rejectsEmptyRequestBodyBeforeCallingService(String path) throws Exception {
         expectError(path, "", 400, "Bad Request", "Required request body is missing or malformed")
-                .andExpect(jsonPath("$", aMapWithSize(5)));
+                .andExpect(jsonPath("$", aMapWithSize(6)));
         verifyNoInteractions(authService);
     }
 
@@ -417,11 +464,11 @@ class AuthControllerTest {
     void rejectsMalformedJsonWithoutExposingPassword(String path) throws Exception {
         String password = "SensitivePasswordToken";
         String requestBody = """
-                {"email":"student@example.com","password":%s,"fullName":"Test Student"}
+                {"email":"student@example.com","password":%s,"full_name":"Test Student"}
                 """.formatted(password);
 
         expectError(path, requestBody, 400, "Bad Request", "Required request body is missing or malformed")
-                .andExpect(jsonPath("$", aMapWithSize(5)))
+                .andExpect(jsonPath("$", aMapWithSize(6)))
                 .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService);
     }
@@ -430,7 +477,7 @@ class AuthControllerTest {
     @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
     void rejectsTruncatedJsonBeforeCallingService(String path) throws Exception {
         expectError(path, "{", 400, "Bad Request", "Required request body is missing or malformed")
-                .andExpect(jsonPath("$", aMapWithSize(5)));
+                .andExpect(jsonPath("$", aMapWithSize(6)));
         verifyNoInteractions(authService);
     }
 
@@ -451,7 +498,7 @@ class AuthControllerTest {
         }
 
         expectError(path, requestBody, 500, "Internal Server Error", "An unexpected internal error occurred")
-                .andExpect(jsonPath("$", aMapWithSize(5)))
+                .andExpect(jsonPath("$", aMapWithSize(6)))
                 .andExpect(content().string(not(containsString(internalDetails))))
                 .andExpect(content().string(not(containsString("IllegalStateException"))))
                 .andExpect(result -> assertThat(result.getResponse().getForwardedUrl()).isNull())
@@ -465,6 +512,16 @@ class AuthControllerTest {
                 .andExpect(status().is(statusCode))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value(statusCode))
+                .andExpect(jsonPath("$.code").value(switch (statusCode) {
+                    case 400 -> message.equals("Validation failed") ? "VALIDATION_ERROR"
+                            : message.startsWith("Client is") ? "INVALID_CLIENT"
+                            : message.startsWith("Redirect URI") ? "INVALID_REDIRECT_URI" : "INVALID_REQUEST";
+                    case 401 -> "INVALID_CREDENTIALS";
+                    case 403 -> "ACCOUNT_NOT_ACTIVE";
+                    case 409 -> "EMAIL_ALREADY_REGISTERED";
+                    case 423 -> "LOGIN_TEMPORARILY_LOCKED";
+                    default -> "INTERNAL_SERVER_ERROR";
+                }))
                 .andExpect(jsonPath("$.error").value(error))
                 .andExpect(jsonPath("$.message").value(message))
                 .andExpect(jsonPath("$.path").value(path))

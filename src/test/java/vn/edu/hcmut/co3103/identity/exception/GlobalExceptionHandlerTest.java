@@ -55,7 +55,7 @@ class GlobalExceptionHandlerTest {
     private static final String REGISTER_PATH = "/api/v1/auth/register";
     private static final String LOGIN_PATH = "/api/v1/auth/login";
     private static final String REGISTER_JSON = """
-            {"email":"student@example.com","password":"Password123!","fullName":"Test Student"}
+            {"email":"student@example.com","password":"Password123!","full_name":"Test Student"}
             """;
     private static final String LOGIN_JSON = """
             {"email":"student@example.com","password":"Password123!"}
@@ -120,7 +120,9 @@ class GlobalExceptionHandlerTest {
             String constraint, String sqlState, int status, String error) throws Exception {
         UserRepository repository = mock(UserRepository.class);
         AuthService service = new AuthService(repository, mock(PasswordEncoder.class),
-                mock(JwtService.class), new JwtProperties());
+                mock(JwtService.class), new JwtProperties(),
+                mock(vn.edu.hcmut.co3103.identity.repository.LmsClientRepository.class),
+                new vn.edu.hcmut.co3103.identity.config.LoginPolicyProperties());
         when(repository.saveAndFlush(any(User.class))).thenThrow(new DataIntegrityViolationException(
                 "Sensitive SQL parameters", new org.hibernate.exception.ConstraintViolationException(
                 "Sensitive database details", new SQLException("Sensitive database details", sqlState), constraint)));
@@ -144,6 +146,7 @@ class GlobalExceptionHandlerTest {
                 .andExpect(header().string("Allow", containsString("POST")))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value(405))
+                .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"))
                 .andExpect(jsonPath("$.error").value("Method Not Allowed"))
                 .andExpect(jsonPath("$.message").value("Request method is not supported"))
                 .andExpect(jsonPath("$.path").value(path))
@@ -159,6 +162,7 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isUnsupportedMediaType())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value(415))
+                .andExpect(jsonPath("$.code").value("UNSUPPORTED_MEDIA_TYPE"))
                 .andExpect(jsonPath("$.error").value("Unsupported Media Type"))
                 .andExpect(jsonPath("$.message").value("Request media type is not supported"))
                 .andExpect(jsonPath("$.path").value(path))
@@ -250,7 +254,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void invalidRegistrationReturnsBadRequestWithFieldErrors() throws Exception {
         String invalidRequest = """
-                {"email":"invalid","password":"short","fullName":" "}
+                {"email":"invalid","password":"short","full_name":" "}
                 """;
 
         expectError(REGISTER_PATH, invalidRequest, 400, "Bad Request", "Validation failed")
@@ -265,7 +269,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void multipleViolationsOnSameFieldReturnOneValidationMessage() throws Exception {
         String invalidRequest = """
-                {"email":"student@example.com","password":"","fullName":"Test Student"}
+                {"email":"student@example.com","password":"","full_name":"Test Student"}
                 """;
 
         expectError(REGISTER_PATH, invalidRequest, 400, "Bad Request", "Validation failed")
@@ -294,6 +298,17 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().is(statusCode))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status").value(statusCode))
+                .andExpect(jsonPath("$.code").value(switch (statusCode) {
+                    case 400 -> message.equals("Validation failed") ? "VALIDATION_ERROR" : "INVALID_REQUEST";
+                    case 401 -> "INVALID_CREDENTIALS";
+                    case 403 -> message.equals("Access is denied") ? "ACCESS_DENIED" : "ACCOUNT_NOT_ACTIVE";
+                    case 404 -> "RESOURCE_NOT_FOUND";
+                    case 406 -> "NOT_ACCEPTABLE";
+                    case 409 -> "EMAIL_ALREADY_REGISTERED";
+                    case 422 -> "UNPROCESSABLE_CONTENT";
+                    case 423 -> "LOGIN_TEMPORARILY_LOCKED";
+                    default -> "INTERNAL_SERVER_ERROR";
+                }))
                 .andExpect(jsonPath("$.error").value(error))
                 .andExpect(jsonPath("$.message").value(message))
                 .andExpect(jsonPath("$.path").value(path))

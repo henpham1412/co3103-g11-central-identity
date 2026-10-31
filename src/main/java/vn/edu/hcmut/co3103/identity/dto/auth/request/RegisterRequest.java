@@ -1,5 +1,6 @@
 package vn.edu.hcmut.co3103.identity.dto.auth.request;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -32,10 +33,12 @@ public class RegisterRequest {
     @NotBlank(message = "Full name is required")
     @Size(max = 150, message = "Full name must not exceed 150 characters")
     @Pattern(regexp = "^[^\\p{Cc}]*$", message = "Full name contains invalid characters")
+    @JsonProperty("full_name")
     private String fullName;
 
     @Size(min = 1, max = 100, message = "Client ID must be between 1 and 100 characters")
     @Pattern(regexp = "\\S+", message = "Client ID must not contain whitespace")
+    @JsonProperty("client_id")
     private String clientId;
 
     // Jackson can choose the property-based constructor instead of calling setters.

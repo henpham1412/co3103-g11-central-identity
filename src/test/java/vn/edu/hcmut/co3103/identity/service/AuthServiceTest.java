@@ -12,6 +12,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -24,6 +25,11 @@ import org.springframework.transaction.annotation.AnnotationTransactionAttribute
 import org.springframework.transaction.interceptor.TransactionInterceptor;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 import vn.edu.hcmut.co3103.identity.config.JwtProperties;
+import vn.edu.hcmut.co3103.identity.config.LoginPolicyProperties;
+import vn.edu.hcmut.co3103.identity.entity.LmsClient;
+import vn.edu.hcmut.co3103.identity.exception.InvalidClientException;
+import vn.edu.hcmut.co3103.identity.exception.InvalidRedirectUriException;
+import vn.edu.hcmut.co3103.identity.repository.LmsClientRepository;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.response.AuthResponse;
@@ -41,6 +47,7 @@ import java.time.Duration;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -83,6 +90,10 @@ class AuthServiceTest {
     private JwtService jwtService;
     @Mock
     private JwtProperties jwtProperties;
+    @Mock
+    private LmsClientRepository lmsClientRepository;
+    @Spy
+    private LoginPolicyProperties loginPolicyProperties = new LoginPolicyProperties();
     @InjectMocks
     private AuthService authService;
 
@@ -120,7 +131,7 @@ class AuthServiceTest {
                 () -> assertEquals(EMAIL, response.getEmail()),
                 () -> assertEquals(FULL_NAME, response.getFullName()),
                 () -> assertEquals(UserStatus.ACTIVE, response.getStatus()),
-                () -> assertEquals(CREATED_AT, response.getCreatedAt())
+                () -> assertEquals("User registered successfully", response.getMessage())
         );
         ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
         verify(userRepository).existsByEmail(EMAIL);
@@ -278,10 +289,11 @@ class AuthServiceTest {
                 () -> assertEquals(TOKEN, response.getAccessToken()),
                 () -> assertEquals("Bearer", response.getTokenType()),
                 () -> assertEquals(3600L, response.getExpiresIn()),
-                () -> assertEquals(USER_ID, response.getUserId()),
-                () -> assertEquals(EMAIL, response.getEmail()),
-                () -> assertEquals(FULL_NAME, response.getFullName()),
-                () -> assertEquals(UserStatus.ACTIVE, response.getStatus()),
+                () -> assertEquals("central-identity", response.getClientId()),
+                () -> assertEquals(USER_ID, response.getUser().userId()),
+                () -> assertEquals(EMAIL, response.getUser().email()),
+                () -> assertEquals(FULL_NAME, response.getUser().fullName()),
+                () -> assertEquals(UserStatus.ACTIVE, response.getUser().status()),
                 () -> assertEquals(0, user.getFailedLoginAttempts()),
                 () -> assertNull(user.getLockedUntil()),
                 () -> assertFalse(user.getLastLoginAt().isBefore(before)),
@@ -291,7 +303,8 @@ class AuthServiceTest {
         order.verify(userRepository).findByEmailForUpdate(EMAIL);
         order.verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
         order.verify(userRepository).save(user);
-        order.verify(jwtService).generateToken(user, null);
+        order.verify(jwtService).generateToken(user, "central-identity");
+        verifyNoInteractions(lmsClientRepository);
         verify(userRepository, never()).findByEmail(anyString());
     }
 
@@ -320,17 +333,82 @@ class AuthServiceTest {
         verify(userRepository).findByEmailForUpdate(EMAIL);
     }
 
-    @Test
-    void loginPassesOptionalClientIdToTokenGeneration() {
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = "https://lms.example.com/auth/callback")
+    void loginPassesValidatedClientIdToTokenGeneration(String redirectUri) {
         loginRequest.setClientId("lms-client");
+        loginRequest.setRedirectUri(redirectUri);
+        when(lmsClientRepository.findByClientIdAndIsActiveTrue("lms-client"))
+                .thenReturn(Optional.of(LmsClient.builder().clientId("lms-client")
+                        .redirectUris(List.of("https://lms.example.com/auth/callback")).build()));
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
         when(jwtService.generateToken(user, "lms-client")).thenReturn(TOKEN);
         when(jwtProperties.getExpirationMs()).thenReturn(3_600_000L);
 
-        assertEquals(TOKEN, authService.login(loginRequest).getAccessToken());
+        AuthResponse response = authService.login(loginRequest);
+        assertEquals(TOKEN, response.getAccessToken());
+        assertEquals("lms-client", response.getClientId());
 
         verify(jwtService).generateToken(user, "lms-client");
+    }
+
+    @Test
+    void loginRejectsUnregisteredOrInactiveClientBeforeAuthentication() {
+        loginRequest.setClientId("invalid-client");
+        when(lmsClientRepository.findByClientIdAndIsActiveTrue("invalid-client"))
+                .thenReturn(Optional.empty());
+        assertThrows(InvalidClientException.class, () -> authService.login(loginRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, jwtService, jwtProperties);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", " ", "https://evil.example/callback", "https://lms.example.com/auth/callback/",
+            "https://lms.example.com/auth/callback?next=evil", "https://lms.example.com/auth/callback#fragment",
+            "https://LMS.example.com/auth/callback", "https://lms.example.com/auth/%63allback"})
+    void loginRejectsRedirectThatDoesNotExactlyMatchRegistration(String redirectUri) {
+        loginRequest.setClientId("lms-client");
+        loginRequest.setRedirectUri(redirectUri);
+        when(lmsClientRepository.findByClientIdAndIsActiveTrue("lms-client"))
+                .thenReturn(Optional.of(LmsClient.builder()
+                        .redirectUris(List.of("https://lms.example.com/auth/callback")).build()));
+        assertThrows(InvalidRedirectUriException.class, () -> authService.login(loginRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, jwtService, jwtProperties);
+    }
+
+    @Test
+    void loginRejectsRedirectWithoutClient() {
+        loginRequest.setRedirectUri("https://lms.example.com/auth/callback");
+        assertThrows(InvalidRedirectUriException.class, () -> authService.login(loginRequest));
+        verifyNoInteractions(lmsClientRepository, userRepository, passwordEncoder, jwtService, jwtProperties);
+    }
+
+    @Test
+    void loginRejectsRedirectIfClientHasNoRegisteredUris() {
+        loginRequest.setClientId("lms-client");
+        loginRequest.setRedirectUri("https://lms.example.com/auth/callback");
+        when(lmsClientRepository.findByClientIdAndIsActiveTrue("lms-client"))
+                .thenReturn(Optional.of(LmsClient.builder().build()));
+        assertThrows(InvalidRedirectUriException.class, () -> authService.login(loginRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, jwtService, jwtProperties);
+    }
+
+    @Test
+    void loginUsesConfiguredThresholdAndDurationWithoutExtendingExistingLock() {
+        loginPolicyProperties.setMaxFailedAttempts(2);
+        loginPolicyProperties.setLockoutDuration(Duration.ofSeconds(90));
+        stubFailedLogin();
+        assertThrows(InvalidCredentialsException.class, () -> authService.login(loginRequest));
+        assertNull(user.getLockedUntil());
+        Instant before = Instant.now();
+        assertThrows(InvalidCredentialsException.class, () -> authService.login(loginRequest));
+        Instant lockedUntil = user.getLockedUntil();
+        assertFalse(lockedUntil.isBefore(before.plusSeconds(90)));
+        assertFalse(lockedUntil.isAfter(Instant.now().plusSeconds(90)));
+        assertThrows(InvalidCredentialsException.class, () -> authService.login(loginRequest));
+        assertEquals(lockedUntil, user.getLockedUntil());
+        verifyNoInteractions(jwtService, jwtProperties);
     }
 
     @ParameterizedTest
@@ -551,7 +629,7 @@ class AuthServiceTest {
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
         IllegalStateException failure = new IllegalStateException("Token signing failed");
-        when(jwtService.generateToken(user, null)).thenThrow(failure);
+        when(jwtService.generateToken(user, "central-identity")).thenThrow(failure);
         PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
         SimpleTransactionStatus transactionStatus = new SimpleTransactionStatus();
         when(transactionManager.getTransaction(any(TransactionDefinition.class))).thenReturn(transactionStatus);
@@ -592,7 +670,7 @@ class AuthServiceTest {
     private void stubSuccessfulLogin() {
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
-        when(jwtService.generateToken(user, null)).thenReturn(TOKEN);
+        when(jwtService.generateToken(user, "central-identity")).thenReturn(TOKEN);
         when(jwtProperties.getExpirationMs()).thenReturn(3_600_999L);
     }
 

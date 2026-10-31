@@ -43,7 +43,7 @@ import java.util.List;
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-@EnableConfigurationProperties(JwtProperties.class)
+@EnableConfigurationProperties({JwtProperties.class, LoginPolicyProperties.class})
 public class SecurityConfig {
 
     private final List<String> corsAllowedOrigins;
@@ -73,9 +73,11 @@ public class SecurityConfig {
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint((request, response, exception) -> writeSecurityError(
                                 objectMapper, request, response, HttpStatus.UNAUTHORIZED,
+                                "UNAUTHORIZED",
                                 "Full authentication is required to access this resource"))
                         .accessDeniedHandler((request, response, exception) -> writeSecurityError(
                                 objectMapper, request, response, HttpStatus.FORBIDDEN,
+                                "ACCESS_DENIED",
                                 "Access is denied")))
                 .authenticationProvider(authenticationProvider)
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
@@ -97,7 +99,7 @@ public class SecurityConfig {
                 boolean allowed = super.processRequest(configuration, request, response);
                 if (!allowed) {
                     writeSecurityError(objectMapper, request, response, HttpStatus.FORBIDDEN,
-                            "Invalid CORS request");
+                            "CORS_REJECTED", "Invalid CORS request");
                 }
                 return allowed;
             }
@@ -107,11 +109,11 @@ public class SecurityConfig {
 
     private static void writeSecurityError(ObjectMapper objectMapper, HttpServletRequest request,
                                            HttpServletResponse response, HttpStatus status,
-                                           String message) throws IOException {
+                                           String code, String message) throws IOException {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()
-                .status(status.value()).error(status.getReasonPhrase()).message(message)
+                .status(status.value()).error(status.getReasonPhrase()).code(code).message(message)
                 .path(request.getRequestURI()).build());
     }
 

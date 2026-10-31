@@ -1,5 +1,6 @@
 package vn.edu.hcmut.co3103.identity.dto.auth.request;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -30,13 +31,18 @@ public class LoginRequest {
 
     @Size(min = 1, max = 100, message = "Client ID must be between 1 and 100 characters")
     @Pattern(regexp = "\\S+", message = "Client ID must not contain whitespace")
+    @JsonProperty("client_id")
     private String clientId;
 
+    @JsonProperty("redirect_uri")
+    private String redirectUri;
+
     // Keep normalization identical for constructor- and setter-based JSON binding.
-    public LoginRequest(String email, String password, String clientId) {
+    public LoginRequest(String email, String password, String clientId, String redirectUri) {
         this.email = normalizeEmail(email);
         this.password = password;
         this.clientId = clientId;
+        this.redirectUri = redirectUri;
     }
 
     private static String normalizeEmail(String email) {

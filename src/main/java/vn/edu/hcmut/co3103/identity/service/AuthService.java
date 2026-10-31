@@ -7,6 +7,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import vn.edu.hcmut.co3103.identity.config.JwtProperties;
+import vn.edu.hcmut.co3103.identity.config.LoginPolicyProperties;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.response.AuthResponse;
@@ -18,10 +19,12 @@ import vn.edu.hcmut.co3103.identity.exception.AccountLockedException;
 import vn.edu.hcmut.co3103.identity.exception.DuplicateEmailException;
 import vn.edu.hcmut.co3103.identity.exception.DataIntegrityViolationClassifier;
 import vn.edu.hcmut.co3103.identity.exception.InvalidCredentialsException;
+import vn.edu.hcmut.co3103.identity.exception.InvalidClientException;
+import vn.edu.hcmut.co3103.identity.exception.InvalidRedirectUriException;
+import vn.edu.hcmut.co3103.identity.repository.LmsClientRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
@@ -39,6 +42,8 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final JwtProperties jwtProperties;
+    private final LmsClientRepository lmsClientRepository;
+    private final LoginPolicyProperties loginPolicyProperties;
 
     @Transactional(readOnly = false)
     public RegisterResponse register(RegisterRequest request) {
@@ -74,7 +79,6 @@ public class AuthService {
                 .email(savedUser.getEmail())
                 .fullName(savedUser.getFullName())
                 .status(savedUser.getStatus())
-                .createdAt(savedUser.getCreatedAt())
                 .build();
     }
 
@@ -86,6 +90,7 @@ public class AuthService {
         if (request.getPassword() != null && request.getPassword().getBytes(StandardCharsets.UTF_8).length > 72) {
             throw new InvalidCredentialsException("Invalid email or password");
         }
+        String clientId = validateClientContext(request);
         String email = request.getEmail().trim().toLowerCase(Locale.ROOT);
         User user = userRepository.findByEmailForUpdate(email)
                 .orElseThrow(() -> {
@@ -104,8 +109,8 @@ public class AuthService {
         if (!passwordMatches) {
             int attempts = (user.getFailedLoginAttempts() == null ? 0 : user.getFailedLoginAttempts()) + 1;
             user.setFailedLoginAttempts(attempts);
-            if (attempts >= 5 && user.getLockedUntil() == null) {
-                user.setLockedUntil(now.plus(Duration.ofMinutes(15)));
+            if (attempts >= loginPolicyProperties.getMaxFailedAttempts() && user.getLockedUntil() == null) {
+                user.setLockedUntil(now.plus(loginPolicyProperties.getLockoutDuration()));
             }
             userRepository.save(user);
             throw new InvalidCredentialsException("Invalid email or password");
@@ -123,16 +128,34 @@ public class AuthService {
         user.setLockedUntil(null);
         user.setLastLoginAt(Instant.now());
         userRepository.save(user);
-        String token = jwtService.generateToken(user, request.getClientId());
+        String token = jwtService.generateToken(user, clientId);
         long expiresInSeconds = jwtProperties.getExpirationMs() / 1000;
         return AuthResponse.builder()
                 .accessToken(token)
                 .tokenType("Bearer")
                 .expiresIn(expiresInSeconds)
-                .userId(user.getUserId())
-                .email(user.getEmail())
-                .fullName(user.getFullName())
-                .status(user.getStatus())
+                .clientId(clientId)
+                .user(new AuthResponse.AuthUser(user.getUserId(), user.getEmail(),
+                        user.getFullName(), user.getStatus()))
                 .build();
+    }
+
+    private String validateClientContext(LoginRequest request) {
+        String clientId = request.getClientId();
+        String redirectUri = request.getRedirectUri();
+        if (clientId == null) {
+            if (redirectUri != null) {
+                throw new InvalidRedirectUriException();
+            }
+            return "central-identity";
+        }
+        var client = lmsClientRepository.findByClientIdAndIsActiveTrue(clientId)
+                .orElseThrow(InvalidClientException::new);
+        // Compare the complete registered value; do not normalize or accept prefix matches.
+        if (redirectUri != null && (redirectUri.isBlank() || client.getRedirectUris() == null
+                || !client.getRedirectUris().contains(redirectUri))) {
+            throw new InvalidRedirectUriException();
+        }
+        return clientId;
     }
 }

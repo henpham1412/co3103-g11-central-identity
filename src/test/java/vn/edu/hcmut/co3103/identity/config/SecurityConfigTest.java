@@ -225,6 +225,7 @@ class SecurityConfigTest {
                 .andExpect(jsonPath("$.status").value(403))
                 .andExpect(jsonPath("$.error").value("Forbidden"))
                 .andExpect(jsonPath("$.message").value("Invalid CORS request"))
+                .andExpect(jsonPath("$.code").value("CORS_REJECTED"))
                 .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
@@ -238,6 +239,7 @@ class SecurityConfigTest {
                 .andExpect(jsonPath("$.status").value(403))
                 .andExpect(jsonPath("$.error").value("Forbidden"))
                 .andExpect(jsonPath("$.message").value("Invalid CORS request"))
+                .andExpect(jsonPath("$.code").value("CORS_REJECTED"))
                 .andExpect(jsonPath("$.path").value("/api/v1/auth/login"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
@@ -276,6 +278,7 @@ class SecurityConfigTest {
                 .andExpect(jsonPath("$.status").value(401))
                 .andExpect(jsonPath("$.error").value("Unauthorized"))
                 .andExpect(jsonPath("$.message").value("Full authentication is required to access this resource"))
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"))
                 .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
@@ -289,6 +292,7 @@ class SecurityConfigTest {
                 .andExpect(jsonPath("$.status").value(403))
                 .andExpect(jsonPath("$.error").value("Forbidden"))
                 .andExpect(jsonPath("$.message").value("Access is denied"))
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"))
                 .andExpect(jsonPath("$.path").value("/api/v1/admin"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
@@ -305,6 +309,7 @@ class SecurityConfigTest {
                 .andExpect(jsonPath("$.status").value(500))
                 .andExpect(jsonPath("$.error").value("Internal Server Error"))
                 .andExpect(jsonPath("$.message").value("An unexpected internal error occurred"))
+                .andExpect(jsonPath("$.code").value("INTERNAL_SERVER_ERROR"))
                 .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(content().string(org.hamcrest.Matchers.not(

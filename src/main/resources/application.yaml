@@ -15,6 +15,11 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+auth:
+  login:
+    max-failed-attempts: ${AUTH_LOGIN_MAX_FAILED_ATTEMPTS:5}
+    lockout-duration: ${AUTH_LOGIN_LOCKOUT_DURATION:15m}
+
 jwt:
   allow-ephemeral-keys: ${JWT_ALLOW_EPHEMERAL_KEYS:false}
   issuer: ${JWT_ISSUER:http://localhost:8080}

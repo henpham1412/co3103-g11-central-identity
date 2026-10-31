@@ -60,11 +60,11 @@ class CurrentUserHttpIntegrationTest {
     void registeredUserCanLoginAndReadCurrentProfileUntilAccountIsDisabledOrDeleted() throws Exception {
         String credentials = "{\"email\":\"%s\",\"password\":\"Password123!\"}".formatted(email);
         String registration = credentials.substring(0, credentials.length() - 1)
-                + ",\"fullName\":\"Profile Student\"}";
+                + ",\"full_name\":\"Profile Student\"}";
         assertThat(send("/api/v1/auth/register", registration, null).statusCode()).isEqualTo(201);
         HttpResponse<String> login = send("/api/v1/auth/login", credentials, null);
         assertThat(login.statusCode()).isEqualTo(200);
-        String token = objectMapper.readTree(login.body()).get("accessToken").asText();
+        String token = objectMapper.readTree(login.body()).get("access_token").asText();
         User user = userRepository.findByEmail(email).orElseThrow();
 
         HttpResponse<String> response = send(PATH, null, token);

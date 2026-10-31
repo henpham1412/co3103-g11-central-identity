@@ -71,6 +71,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()
                         .status(HttpServletResponse.SC_INTERNAL_SERVER_ERROR)
                         .error("Internal Server Error")
+                        .code("INTERNAL_SERVER_ERROR")
                         .message("An unexpected internal error occurred")
                         .path(request.getRequestURI()).build());
                 return;

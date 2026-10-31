@@ -29,7 +29,8 @@ public class GlobalExceptionHandler {
             DuplicateEmailException exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(errorResponse(HttpStatus.CONFLICT, exception.getMessage(), request).build());
+                .body(errorResponse(HttpStatus.CONFLICT, exception.getMessage(), request)
+                        .code("EMAIL_ALREADY_REGISTERED").build());
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)
@@ -39,7 +40,8 @@ public class GlobalExceptionHandler {
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(errorResponse(HttpStatus.CONFLICT,
-                            "Data conflicts with an existing record", request).build());
+                            "Data conflicts with an existing record", request)
+                            .code("EMAIL_ALREADY_REGISTERED").build());
         }
         if (!DataIntegrityViolationClassifier.isRequestDataViolation(exception)) {
             return handleUnexpectedException(exception, request);
@@ -63,7 +65,8 @@ public class GlobalExceptionHandler {
             InvalidCredentialsException exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(errorResponse(HttpStatus.UNAUTHORIZED, exception.getMessage(), request).build());
+                .body(errorResponse(HttpStatus.UNAUTHORIZED, exception.getMessage(), request)
+                        .code("INVALID_CREDENTIALS").build());
     }
 
     @ExceptionHandler(AccountLockedException.class)
@@ -72,6 +75,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.LOCKED)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.LOCKED, exception.getMessage(), request)
+                        .code("LOGIN_TEMPORARILY_LOCKED")
                         .lockedUntil(exception.getLockedUntil())
                         .build());
     }
@@ -81,7 +85,24 @@ public class GlobalExceptionHandler {
             AccountInactiveException exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(errorResponse(HttpStatus.FORBIDDEN, exception.getMessage(), request).build());
+                .body(errorResponse(HttpStatus.FORBIDDEN, exception.getMessage(), request)
+                        .code("ACCOUNT_NOT_ACTIVE").build());
+    }
+
+    @ExceptionHandler(InvalidClientException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidClient(
+            InvalidClientException exception, HttpServletRequest request) {
+        return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.BAD_REQUEST, exception.getMessage(), request)
+                        .code("INVALID_CLIENT").build());
+    }
+
+    @ExceptionHandler(InvalidRedirectUriException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidRedirectUri(
+            InvalidRedirectUriException exception, HttpServletRequest request) {
+        return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.BAD_REQUEST, exception.getMessage(), request)
+                        .code("INVALID_REDIRECT_URI").build());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -93,6 +114,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
+                        .code("VALIDATION_ERROR")
                         .validationErrors(validationErrors)
                         .build());
     }
@@ -183,6 +205,13 @@ public class GlobalExceptionHandler {
         return ApiErrorResponse.builder()
                 .status(status.value())
                 .error(status.getReasonPhrase())
+                .code(switch (status) {
+                    case BAD_REQUEST -> "INVALID_REQUEST";
+                    case UNAUTHORIZED -> "UNAUTHORIZED";
+                    case FORBIDDEN -> "ACCESS_DENIED";
+                    case NOT_FOUND -> "RESOURCE_NOT_FOUND";
+                    default -> status.name();
+                })
                 .message(message)
                 .path(request.getRequestURI());
     }

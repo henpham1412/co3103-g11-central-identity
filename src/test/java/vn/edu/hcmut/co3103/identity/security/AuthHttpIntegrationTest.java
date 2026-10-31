@@ -16,6 +16,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.entity.UserStatus;
+import vn.edu.hcmut.co3103.identity.entity.LmsClient;
+import vn.edu.hcmut.co3103.identity.repository.LmsClientRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 
@@ -26,6 +28,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
@@ -52,12 +55,16 @@ class AuthHttpIntegrationTest {
     private JwtService jwtService;
     @Autowired
     private ObjectMapper objectMapper;
+    @Autowired
+    private LmsClientRepository lmsClientRepository;
 
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final Set<String> testEmails = new HashSet<>();
+    private final Set<String> testClientIds = new HashSet<>();
 
     @ParameterizedTest
-    @ValueSource(strings = {"unknown", "numericPassword", "booleanName", "duplicate", "trailing", "array"})
+    @ValueSource(strings = {"unknown", "numericPassword", "booleanName", "duplicate", "trailing", "array",
+            "camelCase", "duplicateName"})
     void rejectsUnexpectedJsonWithoutCommittingRegistration(String scenario) throws Exception {
         String email = newEmail();
         String body = registerBody(email, PASSWORD);
@@ -68,6 +75,8 @@ class AuthHttpIntegrationTest {
             case "duplicate" -> body.replace("}", ",\"password\":\"AnotherPassword\"}");
             case "trailing" -> body + " {}";
             case "array" -> "[" + body + "]";
+            case "camelCase" -> body.replace("full_name", "fullName");
+            case "duplicateName" -> body.replace("}", ",\"full_name\":\"Another name\"}");
             default -> throw new IllegalArgumentException(scenario);
         };
         assertError(send("POST", REGISTER_PATH, body, "application/json", null), 400, REGISTER_PATH);
@@ -77,14 +86,90 @@ class AuthHttpIntegrationTest {
     @Test
     void documentedUnprefixedEndpointsSupportCompleteAuthenticationFlow() throws Exception {
         String email = newEmail();
-        assertThat(send("POST", "/auth/register", registerBody(email, PASSWORD), "application/json", null)
-                .statusCode()).isEqualTo(201);
+        HttpResponse<String> registration = send("POST", "/auth/register", registerBody(email, PASSWORD),
+                "application/json", null);
+        assertThat(registration.statusCode()).isEqualTo(201);
+        JsonNode registered = objectMapper.readTree(registration.body());
+        assertThat(registered.size()).isEqualTo(5);
+        assertThat(registered.get("message").asText()).isEqualTo("User registered successfully");
+        assertThat(registered.get("full_name").asText()).isEqualTo("Security Test");
+        assertThat(registered.get("email").asText()).isEqualTo(email);
+        assertThat(registered.get("status").asText()).isEqualTo("ACTIVE");
         HttpResponse<String> login = send("POST", "/auth/login", loginBody(email, PASSWORD), "application/json", null);
         assertThat(login.statusCode()).isEqualTo(200);
-        String token = objectMapper.readTree(login.body()).get("accessToken").asText();
+        JsonNode response = objectMapper.readTree(login.body());
+        assertThat(response.size()).isEqualTo(5);
+        assertThat(response.get("token_type").asText()).isEqualTo("Bearer");
+        assertThat(response.get("expires_in").asLong()).isEqualTo(86400);
+        assertThat(response.get("client_id").asText()).isEqualTo("central-identity");
+        assertThat(response.get("user").size()).isEqualTo(4);
+        assertThat(response.get("user").get("user_id")).isEqualTo(registered.get("user_id"));
+        assertThat(response.get("user").get("email").asText()).isEqualTo(email);
+        assertThat(response.get("user").get("full_name").asText()).isEqualTo("Security Test");
+        assertThat(response.get("user").get("status").asText()).isEqualTo("ACTIVE");
+        String token = response.get("access_token").asText();
+        assertThat(jwtService.extractUserId(token)).isEqualTo(registered.get("user_id").asText());
         String clientId = jwtService.extractClaim(token, claims -> claims.get("clientId", String.class));
         assertThat(clientId).isEqualTo("central-identity");
         assertThat(send("GET", "/users/me", null, "application/json", token).statusCode()).isEqualTo(200);
+        JsonNode duplicate = assertError(send("POST", "/auth/register", registerBody(email, PASSWORD),
+                "application/json", null), 409, "/auth/register");
+        assertThat(duplicate.get("code").asText()).isEqualTo("EMAIL_ALREADY_REGISTERED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void activeClientIssuesTokenWithValidatedContext(boolean includeRedirect) throws Exception {
+        User user = createUser();
+        String clientId = createClient(true);
+        String fields = ",\"client_id\":\"" + clientId + "\"";
+        if (includeRedirect) {
+            fields += ",\"redirect_uri\":\"https://lms.example.com/auth/callback\"";
+        }
+        HttpResponse<String> login = send("POST", LOGIN_PATH,
+                loginBody(user.getEmail(), PASSWORD).replace("}", fields + "}"), "application/json", null);
+        assertThat(login.statusCode()).as(login.body()).isEqualTo(200);
+        JsonNode body = objectMapper.readTree(login.body());
+        assertThat(body.get("client_id").asText()).isEqualTo(clientId);
+        String claim = jwtService.extractClaim(body.get("access_token").asText(),
+                claims -> claims.get("clientId", String.class));
+        assertThat(claim).isEqualTo(clientId);
+        assertThat(userRepository.findById(user.getUserId()).orElseThrow().getLastLoginAt()).isNotNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"missing", "inactive", "redirect", "redirectOnly", "emptyRedirect", "prefixRedirect"})
+    void invalidLmsContextCannotIssueTokenOrChangeLoginState(String scenario) throws Exception {
+        User user = createUser();
+        user.setFailedLoginAttempts(2);
+        userRepository.saveAndFlush(user);
+        String clientId = scenario.equals("missing") ? "unregistered-" + UUID.randomUUID()
+                : createClient(!scenario.equals("inactive"));
+        String fields = ",\"client_id\":\"" + clientId + "\"";
+        switch (scenario) {
+            case "redirect" -> fields += ",\"redirect_uri\":\"https://evil.example/callback\"";
+            case "prefixRedirect" -> fields += ",\"redirect_uri\":\"https://lms.example.com/auth/callback/evil\"";
+            case "redirectOnly" -> fields = ",\"redirect_uri\":\"https://lms.example.com/auth/callback\"";
+            case "emptyRedirect" -> fields += ",\"redirect_uri\":\"\"";
+            default -> { }
+        }
+        JsonNode error = assertError(send("POST", LOGIN_PATH,
+                loginBody(user.getEmail(), PASSWORD).replace("}", fields + "}"), "application/json", null),
+                400, LOGIN_PATH);
+        assertThat(error.get("code").asText()).isEqualTo(
+                scenario.equals("missing") || scenario.equals("inactive") ? "INVALID_CLIENT" : "INVALID_REDIRECT_URI");
+        User persisted = userRepository.findById(user.getUserId()).orElseThrow();
+        assertThat(persisted.getLastLoginAt()).isNull();
+        assertThat(persisted.getFailedLoginAttempts()).isEqualTo(2);
+        assertThat(persisted.getLockedUntil()).isNull();
+    }
+
+    private String createClient(boolean active) {
+        String clientId = "pr9-client-" + UUID.randomUUID();
+        testClientIds.add(clientId);
+        lmsClientRepository.saveAndFlush(LmsClient.builder().clientId(clientId).clientName("PR9 Test")
+                .isActive(active).redirectUris(List.of("https://lms.example.com/auth/callback")).build());
+        return clientId;
     }
 
     @ParameterizedTest
@@ -92,11 +177,11 @@ class AuthHttpIntegrationTest {
     void invalidClientContextDoesNotCommitRegistrationOrLogin(String clientId) throws Exception {
         String value = clientId.equals("tooLong") ? "x".repeat(101) : clientId;
         String email = newEmail();
-        String registration = registerBody(email, PASSWORD).replace("}", ",\"clientId\":\"" + value + "\"}");
+        String registration = registerBody(email, PASSWORD).replace("}", ",\"client_id\":\"" + value + "\"}");
         assertError(send("POST", REGISTER_PATH, registration, "application/json", null), 400, REGISTER_PATH);
         assertThat(countUsers(email)).isZero();
         User user = createUser();
-        String login = loginBody(user.getEmail(), PASSWORD).replace("}", ",\"clientId\":\"" + value + "\"}");
+        String login = loginBody(user.getEmail(), PASSWORD).replace("}", ",\"client_id\":\"" + value + "\"}");
         assertError(send("POST", LOGIN_PATH, login, "application/json", null), 400, LOGIN_PATH);
         assertThat(userRepository.findById(user.getUserId()).orElseThrow().getLastLoginAt()).isNull();
     }
@@ -108,7 +193,7 @@ class AuthHttpIntegrationTest {
                 .isEqualTo(201);
         HttpResponse<String> login = send("POST", LOGIN_PATH, loginBody(email, PASSWORD), "application/json", null);
         assertThat(login.statusCode()).isEqualTo(200);
-        String accessToken = objectMapper.readTree(login.body()).get("accessToken").asText();
+        String accessToken = objectMapper.readTree(login.body()).get("access_token").asText();
         HttpResponse<String> keys = send("GET", "/.well-known/jwks.json", null, "application/json", null);
         assertThat(keys.statusCode()).isEqualTo(200);
         var token = com.nimbusds.jwt.SignedJWT.parse(accessToken);
@@ -125,6 +210,7 @@ class AuthHttpIntegrationTest {
         for (String email : testEmails) {
             userRepository.findByEmail(email).ifPresent(userRepository::delete);
         }
+        testClientIds.forEach(lmsClientRepository::deleteById);
         client.close();
     }
 
@@ -143,7 +229,7 @@ class AuthHttpIntegrationTest {
         HttpResponse<String> retry = send("POST", REGISTER_PATH, body, "application/json", null);
         assertThat(retry.statusCode()).isEqualTo(201);
         assertThat(countUsers(email)).isEqualTo(1);
-        assertThat(objectMapper.readTree(retry.body()).get("userId").asText())
+        assertThat(objectMapper.readTree(retry.body()).get("user_id").asText())
                 .isEqualTo(userRepository.findByEmail(email).orElseThrow().getUserId().toString());
     }
 
@@ -178,7 +264,7 @@ class AuthHttpIntegrationTest {
         assertThat(countUsers(email)).isEqualTo(1);
         HttpResponse<String> login = send("POST", LOGIN_PATH, loginBody(email, PASSWORD), accept, null);
         assertThat(login.statusCode()).as(login.body()).isEqualTo(200);
-        String token = objectMapper.readTree(login.body()).get("accessToken").asText();
+        String token = objectMapper.readTree(login.body()).get("access_token").asText();
         assertThat(jwtService.isTokenValid(token,
                 new IdentityUserDetails(userRepository.findByEmail(email).orElseThrow()))).isTrue();
     }
@@ -293,7 +379,7 @@ class AuthHttpIntegrationTest {
         HttpResponse<String> login = send("POST", LOGIN_PATH,
                 "{\"email\":\"%s\",\"password\":\"%s\"}".formatted(email, atLimit), "application/json", null);
         assertThat(login.statusCode()).isEqualTo(200);
-        String token = objectMapper.readTree(login.body()).get("accessToken").asText();
+        String token = objectMapper.readTree(login.body()).get("access_token").asText();
         assertThat(jwtService.isTokenValid(token, new IdentityUserDetails(user))).isTrue();
 
         Instant lastLoginAt = userRepository.findByEmail(email).orElseThrow().getLastLoginAt();
@@ -334,9 +420,18 @@ class AuthHttpIntegrationTest {
         assertThat(error.get("status").asInt()).isEqualTo(status);
         assertThat(error.get("error").asText()).isEqualTo(HttpStatus.valueOf(status).getReasonPhrase());
         assertThat(error.get("message").asText()).isNotBlank();
+        assertThat(error.get("code").asText()).isNotBlank();
+        if (status == 401) {
+            assertThat(error.get("code").asText()).isEqualTo(path.equals(LOGIN_PATH)
+                    ? "INVALID_CREDENTIALS" : "UNAUTHORIZED");
+        } else if (status == 403 && path.equals(LOGIN_PATH)) {
+            assertThat(error.get("code").asText()).isEqualTo("ACCOUNT_NOT_ACTIVE");
+        } else if (status == 423) {
+            assertThat(error.get("code").asText()).isEqualTo("LOGIN_TEMPORARILY_LOCKED");
+        }
         assertThat(error.get("path").asText()).isEqualTo(path);
         assertThat(Instant.parse(error.get("timestamp").asText())).isNotNull();
-        assertThat(error.has("accessToken")).isFalse();
+        assertThat(error.has("access_token")).isFalse();
         return error;
     }
 
@@ -356,7 +451,7 @@ class AuthHttpIntegrationTest {
     }
 
     private String registerBody(String email, String password) {
-        return "{\"email\":\"%s\",\"password\":\"%s\",\"fullName\":\"Security Test\"}".formatted(email, password);
+        return "{\"email\":\"%s\",\"password\":\"%s\",\"full_name\":\"Security Test\"}".formatted(email, password);
     }
 
     private String loginBody(String email, String password) {
