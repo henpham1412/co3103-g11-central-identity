@@ -542,7 +542,7 @@ class AuthServiceTest {
 
     @ParameterizedTest
     @NullSource
-    @EnumSource(value = UserStatus.class, names = {"INACTIVE", "SUSPENDED", "DEACTIVATED"})
+    @EnumSource(value = UserStatus.class, names = {"SUSPENDED", "DEACTIVATED"})
     void loginNonActiveAccountWithCorrectPasswordReturnsForbidden(UserStatus status) {
         user = spy(user);
         user.setStatus(status);

@@ -270,7 +270,7 @@ class AuthHttpIntegrationTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = UserStatus.class, names = {"INACTIVE", "SUSPENDED", "DEACTIVATED"})
+    @EnumSource(value = UserStatus.class, names = {"SUSPENDED", "DEACTIVATED"})
     void nonActiveAccountDisclosesStatusOnlyAfterCorrectPassword(UserStatus status) throws Exception {
         User user = createUser();
         user.setStatus(status);

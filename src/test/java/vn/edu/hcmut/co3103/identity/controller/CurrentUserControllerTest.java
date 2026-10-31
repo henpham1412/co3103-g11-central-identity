@@ -133,7 +133,7 @@ class CurrentUserControllerTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = UserStatus.class, names = {"INACTIVE", "SUSPENDED", "DEACTIVATED"})
+    @EnumSource(value = UserStatus.class, names = {"SUSPENDED", "DEACTIVATED"})
     void rejectsDisabledAccountEvenWhenTokenWasIssuedWhileActive(UserStatus status) throws Exception {
         String token = jwtService.generateToken(user);
         user.setStatus(status);

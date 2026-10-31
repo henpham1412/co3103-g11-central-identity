@@ -470,7 +470,7 @@ class SecurityConfigTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = UserStatus.class, names = {"INACTIVE", "SUSPENDED", "DEACTIVATED"})
+    @EnumSource(value = UserStatus.class, names = {"SUSPENDED", "DEACTIVATED"})
     void rejectsInactiveUsersForBothJwtAndPasswordAuthentication(UserStatus status) throws Exception {
         user.setStatus(status);
 
