@@ -674,6 +674,8 @@ class PasswordResetHttpIntegrationTest {
 
     private void assertInvalid(HttpResponse<String> response) {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(401);
+        assertThat(response.headers().allValues("WWW-Authenticate"))
+                .containsExactly("Bearer realm=\"central-identity\"");
         var error = mapper.readTree(response.body());
         assertErrorEnvelope(error);
 

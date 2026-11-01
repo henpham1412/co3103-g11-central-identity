@@ -68,6 +68,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -440,8 +441,10 @@ class AuthServiceTest {
         Instant lockedUntil = user.getLockedUntil();
         assertFalse(lockedUntil.isBefore(before.plusSeconds(90)));
         assertFalse(lockedUntil.isAfter(Instant.now().plusSeconds(90)));
-        assertThrows(InvalidCredentialsException.class, () -> authService.login(loginRequest));
+        assertThrows(AccountLockedException.class, () -> authService.login(loginRequest));
         assertEquals(lockedUntil, user.getLockedUntil());
+        assertEquals(2, user.getFailedLoginAttempts());
+        verify(passwordEncoder, times(2)).matches(PASSWORD, PASSWORD_HASH);
         verifyNoInteractions(jwtService, jwtProperties);
     }
 
@@ -487,44 +490,24 @@ class AuthServiceTest {
 
     @ParameterizedTest
     @EnumSource(UserStatus.class)
-    void loginWhileLockedWithCorrectPasswordThrowsAccountLockedBeforeCheckingStatus(UserStatus status) {
+    void loginWhileLockedRejectsEveryPasswordWithoutHashComparisonOrStateChanges(UserStatus status) {
         Instant lockedUntil = Instant.now().plus(Duration.ofMinutes(10));
         user.setStatus(status);
         user.setFailedLoginAttempts(5);
         user.setLockedUntil(lockedUntil);
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
-        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
-
-        AccountLockedException exception = assertThrows(AccountLockedException.class,
-                () -> authService.login(loginRequest));
-
-        assertEquals("Account is temporarily locked until " + lockedUntil, exception.getMessage());
-        assertEquals(lockedUntil, exception.getLockedUntil());
+        for (String password : List.of(PASSWORD, "WrongPassword123!")) {
+            loginRequest.setPassword(password);
+            AccountLockedException exception = assertThrows(AccountLockedException.class,
+                    () -> authService.login(loginRequest));
+            assertEquals("Account is temporarily locked until " + lockedUntil, exception.getMessage());
+            assertEquals(lockedUntil, exception.getLockedUntil());
+        }
         assertEquals(lockedUntil, user.getLockedUntil());
         assertEquals(5, user.getFailedLoginAttempts());
-        verify(userRepository, never()).save(any(User.class));
-        verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
-        verifyNoInteractions(jwtService, jwtProperties);
-    }
-
-    @ParameterizedTest
-    @EnumSource(UserStatus.class)
-    void loginWhileLockedWithWrongPasswordReturnsUnauthorizedAndDoesNotExtendLock(UserStatus status) {
-        Instant lockedUntil = Instant.now().plus(Duration.ofMinutes(10));
-        user.setStatus(status);
-        user.setFailedLoginAttempts(5);
-        user.setLockedUntil(lockedUntil);
-        stubFailedLogin();
-
-        InvalidCredentialsException exception = assertThrows(InvalidCredentialsException.class,
-                () -> authService.login(loginRequest));
-
-        assertEquals("Invalid email or password", exception.getMessage());
-        assertEquals(6, user.getFailedLoginAttempts());
-        assertEquals(lockedUntil, user.getLockedUntil());
         assertNull(user.getLastLoginAt());
-        verify(userRepository).save(user);
-        verifyNoInteractions(jwtService, jwtProperties);
+        verify(userRepository, never()).save(any(User.class));
+        verifyNoInteractions(passwordEncoder, jwtService, jwtProperties);
     }
 
     @Test

@@ -224,7 +224,21 @@ class GlobalExceptionHandlerTest {
         String message = "Invalid email or password";
         when(authService.login(any(LoginRequest.class))).thenThrow(new InvalidCredentialsException(message));
 
-        expectError(LOGIN_PATH, LOGIN_JSON, 401, "Unauthorized", message);
+        expectError(LOGIN_PATH, LOGIN_JSON, 401, "Unauthorized", message)
+                .andExpect(header().stringValues("WWW-Authenticate", "Bearer realm=\"central-identity\""));
+    }
+
+    @Test
+    void frameworkUnauthorizedErrorUsesBearerRealmWithoutLeakingReason() throws Exception {
+        when(authService.login(any(LoginRequest.class))).thenThrow(
+                new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.UNAUTHORIZED, "Sensitive authentication details"));
+
+        mockMvc.perform(post(LOGIN_PATH).contentType(MediaType.APPLICATION_JSON).content(LOGIN_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().stringValues("WWW-Authenticate", "Bearer realm=\"central-identity\""))
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"))
+                .andExpect(jsonPath("$.message").value("Unauthorized"));
     }
 
     @Test

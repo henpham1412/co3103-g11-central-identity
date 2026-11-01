@@ -395,6 +395,36 @@ class CurrentUserHttpIntegrationTest {
         return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
 
+    @ParameterizedTest
+    @CsvSource({"\"central-identity\", true", "'[\"lms-client\",\"central-identity\"]', true",
+            "\"other-service\", false", "'[\"other-service\",\"lms-client\"]', false",
+            "null, false", "\"\", false", "[], false", "'[\"central-identity\",123]', false"})
+    void signedAudienceRestrictionIsEnforcedOnProfileReadsAndWrites(String audienceJson, boolean accepted)
+            throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Profile Student")
+                .passwordHash("unused-test-hash").build());
+        var claims = new HashMap<>(jwtService.extractClaim(jwtService.generateToken(user, "lms-client"), value -> value));
+        claims.put("aud", objectMapper.readValue(audienceJson, Object.class));
+        String kid = (String) jwtService.getJwks().get("keys").getFirst().get("kid");
+        String token = Jwts.builder().header().keyId(kid).and().content(objectMapper.writeValueAsBytes(claims))
+                .signWith(JwtTestKeys.KEY_PAIR.getPrivate(), Jwts.SIG.RS256).compact();
+
+        for (String path : new String[]{"/users/me", PATH}) {
+            var read = send(path, null, token);
+            var write = patch(path, "{\"full_name\":\"Updated Name\"}", token);
+            if (accepted) {
+                assertThat(read.statusCode()).as(read.body()).isEqualTo(200);
+                assertThat(write.statusCode()).as(write.body()).isEqualTo(200);
+            } else {
+                assertUnauthorized(read);
+                assertUnauthorized(write);
+                assertThat(userRepository.findById(user.getUserId()).orElseThrow().getFullName())
+                        .isEqualTo("Profile Student");
+                assertThat(userProfileRepository.findById(user.getUserId())).isEmpty();
+            }
+        }
+    }
+
     private void assertUnauthorized(HttpResponse<String> response) {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
         assertThat(response.headers().allValues("WWW-Authenticate")).containsExactly("Bearer realm=\"central-identity\"");

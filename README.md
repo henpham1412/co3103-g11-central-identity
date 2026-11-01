@@ -210,6 +210,9 @@ Tokens include `sub` (the canonical UUID `user_id`), `userId`, `email`, `role`, 
 uses `central-identity` for direct login. A supplied client ID is request context, not proof of
 client authentication or an authorization grant, and must be at most 100 characters without whitespace.
 Tokens issued before this contract that omit `clientId` require login again.
+Tokens may omit `aud` for compatibility. When present, it must be the exact string
+`central-identity` or an array of nonblank strings containing that value. Foreign-only,
+null, empty, or malformed audiences are rejected; `clientId` does not override this restriction.
 
 Authentication request and response JSON uses snake_case. Registration accepts `email`, `password`,
 `full_name`, and optional `client_id`, and returns `message`, `user_id`, `email`, `full_name`, and `status`.
@@ -226,11 +229,16 @@ parameters return HTTP 400 / `BAD_REQUEST` on both route prefixes. Profile field
 `VALIDATION_ERROR`; reset-password policy retains `PASSWORD_POLICY_VIOLATION`. Security, servlet error
 dispatch, and Tomcat parser errors (including malformed percent encodings and encoded NUL paths) use
 the same JSON envelope, even when the request accepts HTML.
+Authentication failures, including invalid login credentials and reset tokens, return
+`WWW-Authenticate: Bearer realm="central-identity"` with HTTP 401.
 
 The failed-login policy defaults to 5 attempts and a 15-minute lockout. Configure
 `auth.login.max-failed-attempts` / `AUTH_LOGIN_MAX_FAILED_ATTEMPTS` and
 `auth.login.lockout-duration` / `AUTH_LOGIN_LOCKOUT_DURATION` (for example `90s` or `15m`).
 Both values must be positive; invalid policy configuration prevents startup.
+While the lock is active, valid login requests return HTTP 423 / `LOGIN_TEMPORARILY_LOCKED`
+for both correct and incorrect passwords without checking BCrypt, changing the failure counter,
+or extending the lock. Once the lock expires, password verification resumes with a fresh counter.
 
 `JWT_EXPIRATION_MS` defaults to `86400000` (24 hours), and `JWT_REFRESH_EXPIRATION_MS`
 defaults to `604800000` (7 days). Refresh token issuance is not implemented yet.

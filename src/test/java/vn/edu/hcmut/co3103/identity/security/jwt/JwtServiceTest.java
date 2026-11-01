@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -24,6 +25,8 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.time.Instant;
 import java.util.Date;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.UUID;
@@ -591,6 +594,48 @@ class JwtServiceTest {
         return new HashMap<>(Map.of("sub", user.getUserId().toString(),
                 "userId", user.getUserId().toString(), "email", EMAIL, "role", "USER",
                 "fullName", user.getFullName(), "clientId", CLIENT_ID, "iss", properties.getIssuer()));
+    }
+
+    @Test
+    void acceptsOmittedAudienceForExistingTokens() {
+        assertAccepted(signClaims(validClaims()));
+    }
+
+    @ParameterizedTest
+    @MethodSource("acceptedAudiences")
+    void acceptsAudienceContainingCentralIdentity(Object audience) {
+        Map<String, Object> claims = validClaims();
+        claims.put("aud", audience);
+        assertAccepted(signClaims(claims));
+    }
+
+    static Stream<Object> acceptedAudiences() {
+        return Stream.of("central-identity", List.of("central-identity"),
+                List.of("lms-client", "central-identity"));
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @MethodSource("rejectedAudiences")
+    void rejectsForeignOrMalformedAudience(Object audience) {
+        Map<String, Object> claims = validClaims();
+        claims.put("aud", audience);
+        assertRejected(signClaims(claims));
+    }
+
+    static Stream<Object> rejectedAudiences() {
+        return Stream.of("other-service", CLIENT_ID, "CENTRAL-IDENTITY", " central-identity ",
+                List.of("other-service", CLIENT_ID), "", " ", List.of(),
+                123, true, Map.of("value", "central-identity"),
+                List.of("central-identity", 123), List.of("central-identity", true),
+                Arrays.asList("central-identity", null), List.of("central-identity", ""));
+    }
+
+    private void assertAccepted(String token) {
+        assertTrue(jwtService.isTokenValid(token));
+        assertTrue(jwtService.isTokenValid(token, identityDetails));
+        assertEquals(EMAIL, jwtService.extractEmail(token));
+        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
     }
 
     private String signClaims(Map<String, Object> claims) {

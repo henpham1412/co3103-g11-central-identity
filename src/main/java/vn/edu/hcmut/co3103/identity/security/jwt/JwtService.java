@@ -9,14 +9,20 @@ import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.io.AbstractDeserializer;
 import io.jsonwebtoken.io.Decoders;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import tools.jackson.core.StreamReadFeature;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 import vn.edu.hcmut.co3103.identity.config.JwtProperties;
 import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
 
+import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
@@ -36,6 +42,8 @@ import java.util.function.Function;
 
 @Service
 public class JwtService {
+
+    private static final String CENTRAL_IDENTITY = "central-identity";
 
     private final JwtProperties jwtProperties;
     private final PrivateKey signingKey;
@@ -61,7 +69,30 @@ public class JwtService {
         } catch (JOSEException exception) {
             throw new IllegalStateException("Unable to create JWT public key identifier", exception);
         }
-        var algorithms = Jwts.parser().verifyWith(publicKey).requireIssuer(issuer).sig();
+        var algorithms = Jwts.parser().verifyWith(publicKey).requireIssuer(issuer)
+                .json(new AbstractDeserializer<Map<String, ?>>() {
+                    private final JsonMapper mapper = JsonMapper.builder()
+                            .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+                            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).build();
+
+                    @Override
+                    protected Map<String, ?> doDeserialize(Reader reader) {
+                        Map<String, ?> values = mapper.readValue(reader, new TypeReference<Map<String, ?>>() {});
+                        // Validate raw JSON: JJWT drops empty claims and normalizes audience values.
+                        if (values.containsKey("aud")) {
+                            Object audience = values.get("aud");
+                            boolean accepted = CENTRAL_IDENTITY.equals(audience)
+                                    || audience instanceof List<?> audiences
+                                    && audiences.contains(CENTRAL_IDENTITY)
+                                    && audiences.stream().allMatch(value ->
+                                            value instanceof String text && StringUtils.hasText(text));
+                            if (!accepted) {
+                                throw new JwtException("JWT audience must include Central Identity");
+                            }
+                        }
+                        return values;
+                    }
+                }).sig();
         // JJWT 0.12.6 rejects an empty registry, so retain RS256 while removing the others.
         for (var algorithm : Jwts.SIG.get().values()) {
             if (!Jwts.SIG.RS256.getId().equals(algorithm.getId())) {
@@ -179,7 +210,7 @@ public class JwtService {
         subject = UUID.fromString(subject).toString();
         claims.put("userId", subject);
         // Direct Central Identity login has a stable client context even without an LMS client.
-        claims.putIfAbsent("clientId", "central-identity");
+        claims.putIfAbsent("clientId", CENTRAL_IDENTITY);
         for (String name : new String[]{"email", "role", "fullName", "clientId"}) {
             if (!(claims.get(name) instanceof String value) || !StringUtils.hasText(value)) {
                 throw new IllegalArgumentException("Identity claim " + name + " is required to issue a token");

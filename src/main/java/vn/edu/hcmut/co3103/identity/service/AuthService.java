@@ -108,15 +108,18 @@ public class AuthService {
                     return new InvalidCredentialsException("Invalid email or password");
                 });
 
-        // Do not disclose status or lockout information until credentials have been verified.
-        boolean passwordMatches = passwordEncoder.matches(request.getPassword(), user.getPasswordHash());
         Instant now = Instant.now();
-        if (user.getLockedUntil() != null && !now.isBefore(user.getLockedUntil())) {
+        if (user.getLockedUntil() != null) {
+            // A live lock must prevent all password checks, regardless of account status.
+            if (now.isBefore(user.getLockedUntil())) {
+                throw new AccountLockedException(
+                        "Account is temporarily locked until " + user.getLockedUntil(), user.getLockedUntil());
+            }
             user.setLockedUntil(null);
             user.setFailedLoginAttempts(0);
         }
 
-        if (!passwordMatches) {
+        if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
             int attempts = (user.getFailedLoginAttempts() == null ? 0 : user.getFailedLoginAttempts()) + 1;
             user.setFailedLoginAttempts(attempts);
             if (attempts >= loginPolicyProperties.getMaxFailedAttempts() && user.getLockedUntil() == null) {
@@ -126,10 +129,6 @@ public class AuthService {
             throw new InvalidCredentialsException("Invalid email or password");
         }
 
-        if (user.getLockedUntil() != null) {
-            throw new AccountLockedException(
-                    "Account is temporarily locked until " + user.getLockedUntil(), user.getLockedUntil());
-        }
         if (user.getStatus() != UserStatus.ACTIVE) {
             throw new AccountInactiveException("Account is inactive");
         }

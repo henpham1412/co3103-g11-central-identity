@@ -333,26 +333,28 @@ class AuthHttpIntegrationTest {
 
     @ParameterizedTest
     @EnumSource(UserStatus.class)
-    void lockedAccountDisclosesLockOnlyAfterCorrectPassword(UserStatus status) throws Exception {
+    void lockedAccountReturnsIdenticalErrorsForCorrectAndWrongPasswords(UserStatus status) throws Exception {
         User user = createUser();
         user.setStatus(status);
         user.setFailedLoginAttempts(4);
         userRepository.saveAndFlush(user);
 
-        for (int attempts = 5; attempts <= 6; attempts++) {
-            JsonNode wrong = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), "wrong-password"),
-                    "application/json", null), 401, LOGIN_PATH);
-            assertThat(wrong.get("message").asText()).isEqualTo("Invalid email or password");
-            assertThat(wrong.has("locked_until")).isFalse();
-            User persisted = userRepository.findById(user.getUserId()).orElseThrow();
-            assertThat(persisted.getFailedLoginAttempts()).isEqualTo(attempts);
-            assertThat(persisted.getLockedUntil()).isAfter(Instant.now());
-            assertThat(persisted.getLastLoginAt()).isNull();
-        }
+        assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), "wrong-password"),
+                "application/json", null), 401, LOGIN_PATH);
+        User locked = userRepository.findById(user.getUserId()).orElseThrow();
+        assertThat(locked.getFailedLoginAttempts()).isEqualTo(5);
+        assertThat(locked.getLockedUntil()).isAfter(Instant.now());
+
+        JsonNode wrong = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), "wrong-password"),
+                "application/json", null), 423, LOGIN_PATH);
         JsonNode correct = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), PASSWORD),
                 "application/json", null), 423, LOGIN_PATH);
+        assertThat(wrong).isEqualTo(correct);
         assertThat(correct.get("details").get(0).get("locked_until").asText()).isNotBlank();
-        assertThat(userRepository.findById(user.getUserId()).orElseThrow().getFailedLoginAttempts()).isEqualTo(6);
+        User persisted = userRepository.findById(user.getUserId()).orElseThrow();
+        assertThat(persisted.getFailedLoginAttempts()).isEqualTo(5);
+        assertThat(persisted.getLockedUntil()).isEqualTo(locked.getLockedUntil());
+        assertThat(persisted.getLastLoginAt()).isNull();
     }
 
     @Test
@@ -464,6 +466,8 @@ class AuthHttpIntegrationTest {
         if (status == 400 && (path.endsWith("/register") || path.endsWith("/login"))) {
             assertThat(error.get("code").asText()).isEqualTo("BAD_REQUEST");
         } else if (status == 401) {
+            assertThat(response.headers().allValues("WWW-Authenticate"))
+                    .containsExactly("Bearer realm=\"central-identity\"");
             assertThat(error.get("code").asText()).isEqualTo(path.equals(LOGIN_PATH)
                     ? "INVALID_CREDENTIALS" : "UNAUTHORIZED");
         } else if (status == 403 && path.equals(LOGIN_PATH)) {

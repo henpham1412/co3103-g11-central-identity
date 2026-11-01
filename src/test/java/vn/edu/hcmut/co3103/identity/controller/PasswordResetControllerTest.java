@@ -112,6 +112,7 @@ class PasswordResetControllerTest {
         mvc.perform(post("/auth/reset-password").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"token\":\"invalid-token\",\"new_password\":\"NewPassword123!\"}"))
                 .andExpect(status().isUnauthorized())
+                .andExpect(header().stringValues("WWW-Authenticate", "Bearer realm=\"central-identity\""))
                 .andExpect(jsonPath("$.code").value("INVALID_OR_EXPIRED_RESET_TOKEN"))
                 .andExpect(jsonPath("$.message").value("Invalid or expired password reset token"));
     }

@@ -3,6 +3,7 @@ package vn.edu.hcmut.co3103.identity.exception;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -31,6 +32,8 @@ import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLengthValidator;
 @Slf4j
 public class GlobalExceptionHandler {
 
+    private static final String BEARER_CHALLENGE = "Bearer realm=\"central-identity\"";
+
     @ExceptionHandler(RecoveryUnavailableException.class)
     public ResponseEntity<ApiErrorResponse> handleRecoveryUnavailable(
             RecoveryUnavailableException exception, HttpServletRequest request) {
@@ -44,6 +47,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleInvalidPasswordResetToken(
             InvalidPasswordResetTokenException exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).contentType(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.WWW_AUTHENTICATE, BEARER_CHALLENGE)
                 .body(errorResponse(HttpStatus.UNAUTHORIZED, exception.getMessage(), request)
                         .code("INVALID_OR_EXPIRED_RESET_TOKEN").build());
     }
@@ -88,6 +92,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleInvalidCredentials(
             InvalidCredentialsException exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .header(HttpHeaders.WWW_AUTHENTICATE, BEARER_CHALLENGE)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.UNAUTHORIZED, exception.getMessage(), request)
                         .code("INVALID_CREDENTIALS").build());
@@ -233,7 +238,11 @@ public class GlobalExceptionHandler {
             return handleUnexpectedException(exception, request);
         }
         // Framework reasons and ProblemDetail properties may contain internal details.
-        return ResponseEntity.status(status).headers(exception.getHeaders())
+        var response = ResponseEntity.status(status).headers(exception.getHeaders());
+        if (status == HttpStatus.UNAUTHORIZED) {
+            response.headers(headers -> headers.set(HttpHeaders.WWW_AUTHENTICATE, BEARER_CHALLENGE));
+        }
+        return response
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(status, status.getReasonPhrase(), request).build());
     }
