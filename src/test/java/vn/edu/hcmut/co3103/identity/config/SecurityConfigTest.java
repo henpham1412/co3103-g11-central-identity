@@ -238,7 +238,7 @@ class SecurityConfigTest {
             }
             mockMvc.perform(request.accept(MediaType.APPLICATION_XML))
                     .andExpect(status().isUnauthorized())
-                    .andExpect(header().stringValues(HttpHeaders.WWW_AUTHENTICATE, "Bearer"))
+                    .andExpect(header().stringValues(HttpHeaders.WWW_AUTHENTICATE, "Bearer realm=\"central-identity\""))
                     .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                     .andExpect(content().string("{\"code\":\"UNAUTHORIZED\","
                             + "\"message\":\"Full authentication is required to access this resource\",\"details\":[]}"));

@@ -117,7 +117,7 @@ public class SecurityConfig {
                                            String code, String message) throws IOException {
         response.setStatus(status.value());
         if (status == HttpStatus.UNAUTHORIZED) {
-            response.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
+            response.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Bearer realm=\"central-identity\"");
         }
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()

@@ -397,7 +397,7 @@ class CurrentUserHttpIntegrationTest {
 
     private void assertUnauthorized(HttpResponse<String> response) {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
-        assertThat(response.headers().allValues("WWW-Authenticate")).containsExactly("Bearer");
+        assertThat(response.headers().allValues("WWW-Authenticate")).containsExactly("Bearer realm=\"central-identity\"");
         assertThat(response.headers().firstValue("Content-Type")).contains("application/json");
         assertThat(response.body()).isEqualTo("{\"code\":\"UNAUTHORIZED\","
                 + "\"message\":\"Full authentication is required to access this resource\",\"details\":[]}");
