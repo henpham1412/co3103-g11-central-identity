@@ -122,6 +122,37 @@ This verifies that the application can be compiled and packaged without executin
 Create a local PostgreSQL database named `central_identity_dev`, for example with
 `createdb -U postgres central_identity_dev`. Flyway applies the schema migrations at startup.
 
+PostgreSQL server logs must also protect registration PII. Every new Hikari connection sets
+`log_error_verbosity=terse`, `log_statement=none`, `log_min_error_statement=panic`,
+`log_parameter_max_length=0`, and `log_parameter_max_length_on_error=0`. This suppresses unique-constraint
+row details and statement/parameter dumps while retaining the error header/constraint name. The JDBC
+`logServerErrorDetail=false` setting separately protects application logs. Do not enable statement,
+duration, sampled-query, or parameter logging for identity traffic.
+
+For a **non-superuser application role**, a database administrator must grant the required PostgreSQL
+parameter permissions once (replace `identity_app` with the configured role):
+
+```sql
+GRANT SET ON PARAMETER log_error_verbosity, log_statement, log_min_error_statement,
+    log_parameter_max_length TO identity_app;
+```
+
+No superuser or server-file access is needed by the application. Missing parameter permissions prevent
+pool initialization instead of silently running with unsafe logging. The last parameter,
+`log_parameter_max_length_on_error`, is user-settable. Set the same privacy values in `postgresql.conf`
+for other sessions using this database. PostgreSQL's server verbosity is separate from the JDBC flag;
+see the [PostgreSQL 18 logging reference](https://www.postgresql.org/docs/18/runtime-config-logging.html).
+
+The full regression suite reads **actual PostgreSQL server logs**. On a disposable PostgreSQL 18.6 test
+cluster, run `psql -X -v ON_ERROR_STOP=1 -U postgres -d central_identity_dev -f scripts/postgresql-test-logging.sql`
+and restart PostgreSQL. Use an administrator role confined to this disposable test cluster;
+the deployed application must not receive administrator or server-file privileges.
+The privacy regression fails if `logging_collector`/stderr log access is missing. It forces six concurrent
+registrations through the existence check, waits for five server collision entries, and scans server,
+application stdout, and application file logs for fixture emails, names, passwords, hashes, and IDs.
+CI applies this setup before `./mvnw clean verify`. Locally run `.\mvnw.cmd clean verify` with JDK 25
+and the test database's `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` configured.
+
 Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell, or
 `cp .env.example .env` in Bash). Set `DB_PASSWORD` to your local PostgreSQL password;
 adjust `DB_URL` and `DB_USERNAME` if needed. The `.env` file is ignored by Git.
@@ -187,8 +218,14 @@ registered and active, and requires a redirect URI that exactly matches one of t
 A redirect URI without a client is rejected. Omitting both selects the `central-identity` context.
 Login returns `access_token`, `token_type` (`Bearer`), `expires_in` (seconds), `client_id`, and a nested
 `user` containing `user_id`, `email`, `full_name`, and `status`. JWT claim names are unchanged.
-Errors include a stable machine-readable `code`; optional details use
-`locked_until` and `validation_errors`, with snake_case validation keys such as `full_name` and `client_id`.
+Errors have exactly three members: `{"code":"BAD_REQUEST","message":"Validation failed","details":[]}`.
+`details` is always an array. Validation entries use `{"field":"full_name","message":"Full name is required"}`;
+lockout uses `{"locked_until":"2026-10-29T12:15:00Z"}`. Rejected values are never included.
+Registration/login missing or invalid fields, malformed bodies, password policy, and invalid client/redirect
+parameters return HTTP 400 / `BAD_REQUEST` on both route prefixes. Profile field validation retains
+`VALIDATION_ERROR`; reset-password policy retains `PASSWORD_POLICY_VIOLATION`. Security, servlet error
+dispatch, and Tomcat parser errors (including malformed percent encodings and encoded NUL paths) use
+the same JSON envelope, even when the request accepts HTML.
 
 The failed-login policy defaults to 5 attempts and a 15-minute lockout. Configure
 `auth.login.max-failed-attempts` / `AUTH_LOGIN_MAX_FAILED_ATTEMPTS` and

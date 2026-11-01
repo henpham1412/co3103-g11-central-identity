@@ -57,6 +57,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import static vn.edu.hcmut.co3103.identity.support.ErrorResponseAssertions.errorEnvelope;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -112,7 +114,7 @@ class SecurityConfigTest {
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+        mockMvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).alwaysExpect(errorEnvelope()).build();
         user = User.builder()
                 .userId(UUID.fromString("00000000-0000-0000-0000-000000000000"))
                 .email(EMAIL)
@@ -222,12 +224,8 @@ class SecurityConfigTest {
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, method))
                 .andExpect(status().isForbidden())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.error").value("Forbidden"))
                 .andExpect(jsonPath("$.message").value("Invalid CORS request"))
                 .andExpect(jsonPath("$.code").value("CORS_REJECTED"))
-                .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
     }
 
@@ -236,12 +234,8 @@ class SecurityConfigTest {
         mockMvc.perform(post("/api/v1/auth/login").header(HttpHeaders.ORIGIN, "https://untrusted.example"))
                 .andExpect(status().isForbidden())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.error").value("Forbidden"))
                 .andExpect(jsonPath("$.message").value("Invalid CORS request"))
                 .andExpect(jsonPath("$.code").value("CORS_REJECTED"))
-                .andExpect(jsonPath("$.path").value("/api/v1/auth/login"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
     }
 
@@ -275,12 +269,8 @@ class SecurityConfigTest {
         mockMvc.perform(request.accept(MediaType.APPLICATION_XML))
                 .andExpect(status().isUnauthorized())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(401))
-                .andExpect(jsonPath("$.error").value("Unauthorized"))
                 .andExpect(jsonPath("$.message").value("Full authentication is required to access this resource"))
-                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"))
-                .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
 
     @Test
@@ -289,12 +279,8 @@ class SecurityConfigTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
                 .andExpect(status().isForbidden())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.error").value("Forbidden"))
                 .andExpect(jsonPath("$.message").value("Access is denied"))
-                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"))
-                .andExpect(jsonPath("$.path").value("/api/v1/admin"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
     }
 
     @ParameterizedTest
@@ -306,12 +292,8 @@ class SecurityConfigTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
                 .andExpect(status().isInternalServerError())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(500))
-                .andExpect(jsonPath("$.error").value("Internal Server Error"))
                 .andExpect(jsonPath("$.message").value("An unexpected internal error occurred"))
                 .andExpect(jsonPath("$.code").value("INTERNAL_SERVER_ERROR"))
-                .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(content().string(org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.containsString("Sensitive database"))));
     }
@@ -431,11 +413,8 @@ class SecurityConfigTest {
         mockMvc.perform(post(path).accept(MediaType.APPLICATION_XML))
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
                 .andExpect(jsonPath("$.message").isNotEmpty())
-                .andExpect(jsonPath("$.path").value(path))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(result -> assertNull(result.getResponse().getForwardedUrl()))
                 .andExpect(result -> assertNull(result.getResponse().getErrorMessage()));
         verifyNoInteractions(userRepository);

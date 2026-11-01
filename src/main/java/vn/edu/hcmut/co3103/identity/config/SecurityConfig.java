@@ -1,5 +1,6 @@
 package vn.edu.hcmut.co3103.identity.config;
 
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,6 +65,7 @@ public class SecurityConfig {
                 .addFilterAt(jsonCorsFilter(objectMapper), CorsFilter.class)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
+                        .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.POST, "/auth/register", "/auth/login",
                                 "/api/v1/auth/register", "/api/v1/auth/login",
                                 "/auth/forgot-password", "/auth/reset-password",
@@ -91,7 +93,7 @@ public class SecurityConfig {
         filter.setCorsProcessor(new DefaultCorsProcessor() {
             @Override
             protected void rejectRequest(ServerHttpResponse response) {
-                // Leave the body uncommitted so processRequest can include the request path in JSON.
+                // Leave the body uncommitted so processRequest can write the JSON envelope.
                 response.setStatusCode(HttpStatus.FORBIDDEN);
             }
 
@@ -115,8 +117,7 @@ public class SecurityConfig {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()
-                .status(status.value()).error(status.getReasonPhrase()).code(code).message(message)
-                .path(request.getRequestURI()).build());
+                .code(code).message(message).build());
     }
 
     @Bean
@@ -125,9 +126,7 @@ public class SecurityConfig {
             response.setStatus(HttpStatus.BAD_REQUEST.value());
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()
-                    .status(HttpStatus.BAD_REQUEST.value()).error(HttpStatus.BAD_REQUEST.getReasonPhrase())
-                    .code("INVALID_REQUEST").message("Request was rejected because its format is invalid")
-                    .path(request.getRequestURI()).build());
+                    .code("BAD_REQUEST").message("Request was rejected because its format is invalid").build());
         };
     }
 

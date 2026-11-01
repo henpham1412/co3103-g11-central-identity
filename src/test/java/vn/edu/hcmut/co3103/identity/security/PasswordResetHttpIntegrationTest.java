@@ -47,6 +47,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import static vn.edu.hcmut.co3103.identity.support.ErrorResponseAssertions.assertErrorEnvelope;
+import static vn.edu.hcmut.co3103.identity.support.ErrorResponseAssertions.validationMessage;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.*;
@@ -503,11 +506,11 @@ class PasswordResetHttpIntegrationTest {
             assertValidation(post(prefix + "/reset-password", "{\"token\":\"" + token + "\",\"new_password\":"
                     + quoted + "}"), "PASSWORD_POLICY_VIOLATION", "new_password");
             assertValidation(post(prefix + "/login", "{\"email\":\"" + user.getEmail() + "\",\"password\":"
-                    + quoted + "}"), "VALIDATION_ERROR", "password");
+                    + quoted + "}"), "BAD_REQUEST", "password");
             assertValidation(post(prefix + "/register", "{\"email\":\"" + registrationEmail
-                    + "\",\"full_name\":\"Unicode Test\",\"password\":" + quoted + "}"), "VALIDATION_ERROR", "password");
+                    + "\",\"full_name\":\"Unicode Test\",\"password\":" + quoted + "}"), "BAD_REQUEST", "password");
             assertValidation(post(prefix + "/register", "{\"email\":\"" + registrationEmail
-                    + "\",\"password\":\"ValidPassword123!\",\"full_name\":" + quoted + "}"), "VALIDATION_ERROR", "full_name");
+                    + "\",\"password\":\"ValidPassword123!\",\"full_name\":" + quoted + "}"), "BAD_REQUEST", "full_name");
         }
         assertThat(users.findByEmail(registrationEmail)).isEmpty();
         assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(userBefore);
@@ -528,7 +531,7 @@ class PasswordResetHttpIntegrationTest {
         assertThat(post("/api/v1/auth/reset-password", resetBody(token, "????????")).statusCode()).isEqualTo(200);
         var before = jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId());
         for (String malformed : new String[]{"\\ud800".repeat(8), "\\udfff".repeat(8)}) {
-            assertValidation(post("/api/v1/auth/login", loginBody(user, malformed)), "VALIDATION_ERROR", "password");
+            assertValidation(post("/api/v1/auth/login", loginBody(user, malformed)), "BAD_REQUEST", "password");
             assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(before);
         }
         assertThat(post("/api/v1/auth/login", loginBody(user, "????????")).statusCode()).isEqualTo(200);
@@ -551,13 +554,13 @@ class PasswordResetHttpIntegrationTest {
         String quoted = UnicodeInputs.jsonString(email);
         for (String prefix : new String[]{"/auth", "/api/v1/auth"}) {
             assertValidation(post(prefix + "/register", "{\"email\":" + quoted
-                    + ",\"password\":\"" + OLD_PASSWORD + "\",\"full_name\":\"Email Test\"}"), "VALIDATION_ERROR", "email");
+                    + ",\"password\":\"" + OLD_PASSWORD + "\",\"full_name\":\"Email Test\"}"), "BAD_REQUEST", "email");
             // A distinct address would be inserted if the registration guard were missing.
             assertValidation(post(prefix + "/register", "{\"email\":" + UnicodeInputs.jsonString("new-" + email)
-                    + ",\"password\":\"" + OLD_PASSWORD + "\",\"full_name\":\"Email Test\"}"), "VALIDATION_ERROR", "email");
+                    + ",\"password\":\"" + OLD_PASSWORD + "\",\"full_name\":\"Email Test\"}"), "BAD_REQUEST", "email");
             for (String password : new String[]{OLD_PASSWORD, "WrongPassword123!"}) {
                 assertValidation(post(prefix + "/login", "{\"email\":" + quoted + ",\"password\":\""
-                        + password + "\"}"), "VALIDATION_ERROR", "email");
+                        + password + "\"}"), "BAD_REQUEST", "email");
             }
             assertValidation(post(prefix + "/forgot-password", "{\"email\":" + quoted + "}"), "BAD_REQUEST", "email");
         }
@@ -597,12 +600,10 @@ class PasswordResetHttpIntegrationTest {
     private void assertValidation(HttpResponse<String> response, String code, String field) {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
         var error = mapper.readTree(response.body());
+        assertErrorEnvelope(error);
         assertThat(error.get("code").asText()).isEqualTo(code);
-        assertThat(error.get("status").asInt()).isEqualTo(400);
-        assertThat(error.get("error").asText()).isEqualTo("Bad Request");
-        assertThat(error.get("path").asText()).isEqualTo(response.request().uri().getPath());
-        assertThat(error.get("timestamp").asText()).isNotBlank();
-        assertThat(error.get("validation_errors").has(field)).isTrue();
+
+        assertThat(validationMessage(error, field)).isNotBlank();
     }
 
     private String requestToken(String prefix, User user) throws Exception {
@@ -661,10 +662,8 @@ class PasswordResetHttpIntegrationTest {
     private void assertInvalid(HttpResponse<String> response) {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(401);
         var error = mapper.readTree(response.body());
-        assertThat(error.get("status").asInt()).isEqualTo(401);
-        assertThat(error.get("error").asText()).isEqualTo("Unauthorized");
-        assertThat(error.get("path").asText()).isEqualTo(response.request().uri().getPath());
-        assertThat(error.get("timestamp").asText()).isNotBlank();
+        assertErrorEnvelope(error);
+
         assertThat(error.get("code").asText()).isEqualTo("INVALID_OR_EXPIRED_RESET_TOKEN");
         assertThat(error.get("message").asText()).isEqualTo("Invalid or expired password reset token");
     }

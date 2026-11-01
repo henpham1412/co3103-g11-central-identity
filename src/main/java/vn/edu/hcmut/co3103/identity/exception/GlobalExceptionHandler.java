@@ -22,6 +22,9 @@ import vn.edu.hcmut.co3103.identity.dto.auth.request.ResetPasswordRequest;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
+import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
+import vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest;
 
 @RestControllerAdvice
 @Slf4j
@@ -96,7 +99,7 @@ public class GlobalExceptionHandler {
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.LOCKED, exception.getMessage(), request)
                         .code("LOGIN_TEMPORARILY_LOCKED")
-                        .lockedUntil(exception.getLockedUntil())
+                        .details(List.of(Map.of("locked_until", exception.getLockedUntil())))
                         .build());
     }
 
@@ -114,7 +117,7 @@ public class GlobalExceptionHandler {
             InvalidClientException exception, HttpServletRequest request) {
         return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, exception.getMessage(), request)
-                        .code("INVALID_CLIENT").build());
+                        .code("BAD_REQUEST").build());
     }
 
     @ExceptionHandler(InvalidRedirectUriException.class)
@@ -122,7 +125,7 @@ public class GlobalExceptionHandler {
             InvalidRedirectUriException exception, HttpServletRequest request) {
         return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, exception.getMessage(), request)
-                        .code("INVALID_REDIRECT_URI").build());
+                        .code("BAD_REQUEST").build());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -134,7 +137,9 @@ public class GlobalExceptionHandler {
                         error.getDefaultMessage()));
         String code = "VALIDATION_ERROR";
         Object target = exception.getBindingResult().getTarget();
-        if (target instanceof ForgotPasswordRequest && exception.getBindingResult().hasFieldErrors("email")) {
+        if (target instanceof RegisterRequest || target instanceof LoginRequest) {
+            code = "BAD_REQUEST";
+        } else if (target instanceof ForgotPasswordRequest && exception.getBindingResult().hasFieldErrors("email")) {
             code = "BAD_REQUEST";
         } else if (target instanceof ResetPasswordRequest && exception.getBindingResult().hasFieldErrors("newPassword")) {
             code = "PASSWORD_POLICY_VIOLATION";
@@ -143,7 +148,8 @@ public class GlobalExceptionHandler {
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
                         .code(code)
-                        .validationErrors(validationErrors)
+                        .details(validationErrors.entrySet().stream()
+                                .map(error -> Map.of("field", error.getKey(), "message", error.getValue())).toList())
                         .build());
     }
 
@@ -162,7 +168,7 @@ public class GlobalExceptionHandler {
             InvalidEmailException exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
-                        .code("BAD_REQUEST").validationErrors(Map.of("email", exception.getMessage())).build());
+                        .code("BAD_REQUEST").details(List.of(Map.of("field", "email", "message", exception.getMessage()))).build());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -239,16 +245,13 @@ public class GlobalExceptionHandler {
             HttpStatus status, String message, HttpServletRequest request) {
         log.debug("Request {} failed with status {}: {}", request.getRequestURI(), status.value(), message);
         return ApiErrorResponse.builder()
-                .status(status.value())
-                .error(status.getReasonPhrase())
                 .code(switch (status) {
-                    case BAD_REQUEST -> "INVALID_REQUEST";
+                    case BAD_REQUEST -> "BAD_REQUEST";
                     case UNAUTHORIZED -> "UNAUTHORIZED";
                     case FORBIDDEN -> "ACCESS_DENIED";
                     case NOT_FOUND -> "RESOURCE_NOT_FOUND";
                     default -> status.name();
                 })
-                .message(message)
-                .path(request.getRequestURI());
+                .message(message);
     }
 }

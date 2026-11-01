@@ -11,6 +11,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import vn.edu.hcmut.co3103.identity.support.ErrorContractTestConfiguration;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -43,6 +44,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
+import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.hasSize;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.aMapWithSize;
 import static org.hamcrest.Matchers.containsString;
@@ -60,7 +64,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(value = {AuthController.class, JwksController.class})
-@Import({SecurityConfig.class, JwtAuthenticationFilter.class, JwtService.class})
+@Import({ErrorContractTestConfiguration.class, SecurityConfig.class, JwtAuthenticationFilter.class, JwtService.class})
 class AuthControllerTest {
 
     private static final String REGISTER_PATH = "/api/v1/auth/register";
@@ -182,7 +186,7 @@ class AuthControllerTest {
         String requestBody = REGISTER_JSON.replace(FULL_NAME, "Test" + escapedControl + " Student");
 
         expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors.full_name").value("Full name contains invalid characters"));
+                .andExpect(jsonPath("$.details[?(@.field == 'full_name')].message").value(contains("Full name contains invalid characters")));
         verifyNoInteractions(authService, userRepository);
     }
 
@@ -219,8 +223,8 @@ class AuthControllerTest {
     void registerRejectsInvalidInputBeforeCallingService(String requestBody, String field, String message)
             throws Exception {
         expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
-                .andExpect(jsonPath("$.validation_errors." + field).value(message));
+                .andExpect(jsonPath("$.details", hasSize(1)))
+                .andExpect(jsonPath("$.details[?(@.field == '" + field + "')].message").value(contains(message)));
         verifyNoInteractions(authService);
     }
 
@@ -235,10 +239,7 @@ class AuthControllerTest {
                             .content(REGISTER_PATH.equals(path) ? REGISTER_JSON : LOGIN_JSON))
                     .andExpect(status().isNotAcceptable())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.status").value(406))
-                    .andExpect(jsonPath("$.code").value("NOT_ACCEPTABLE"))
-                    .andExpect(jsonPath("$.path").value(path))
-                    .andExpect(jsonPath("$.timestamp").isNotEmpty());
+                    .andExpect(jsonPath("$.code").value("NOT_ACCEPTABLE"));
         }
         verifyNoInteractions(authService, userRepository);
     }
@@ -260,7 +261,7 @@ class AuthControllerTest {
         int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         String password = character.repeat(72 / bytesPerCharacter) + "b";
         expectError(LOGIN_PATH, LOGIN_JSON.replace(PASSWORD, password), 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors.password").value("Password must be valid Unicode and not exceed 72 UTF-8 bytes"))
+                .andExpect(jsonPath("$.details[?(@.field == 'password')].message").value(contains("Password must be valid Unicode and not exceed 72 UTF-8 bytes")))
                 .andExpect(jsonPath("$.access_token").doesNotExist())
                 .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService, userRepository);
@@ -271,8 +272,7 @@ class AuthControllerTest {
     void rejectsUnsupportedContentTypeBeforeCallingService(String path) throws Exception {
         mockMvc.perform(post(path).contentType(MediaType.APPLICATION_XML).content("<request/>"))
                 .andExpect(status().isUnsupportedMediaType())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(415));
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON));
         verifyNoInteractions(authService, userRepository);
     }
 
@@ -300,7 +300,7 @@ class AuthControllerTest {
         String password = character.repeat(repetitions);
         String requestBody = REGISTER_JSON.replace(PASSWORD, password);
         expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors.password").value("Password must be valid Unicode and not exceed 72 UTF-8 bytes"))
+                .andExpect(jsonPath("$.details[?(@.field == 'password')].message").value(contains("Password must be valid Unicode and not exceed 72 UTF-8 bytes")))
                 .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService, userRepository);
     }
@@ -340,7 +340,7 @@ class AuthControllerTest {
     void registerRejectsCamelCaseAliases(String canonical, String alias) throws Exception {
         expectError(REGISTER_PATH, REGISTER_JSON.replace(canonical, alias), 400, "Bad Request",
                 "Required request body is missing or malformed")
-                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
         verifyNoInteractions(authService, userRepository);
     }
 
@@ -349,7 +349,7 @@ class AuthControllerTest {
     void loginRejectsCamelCaseAliases(String canonical, String alias) throws Exception {
         expectError(LOGIN_PATH, LOGIN_JSON.replace(canonical, alias), 400, "Bad Request",
                 "Required request body is missing or malformed")
-                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
         verifyNoInteractions(authService, userRepository);
     }
 
@@ -358,7 +358,7 @@ class AuthControllerTest {
     void loginRejectsDuplicateContextFields(String field) throws Exception {
         expectError(LOGIN_PATH, LOGIN_JSON.replace("}", ",\"" + field + "\":\"duplicate\"}"),
                 400, "Bad Request", "Required request body is missing or malformed")
-                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
         verifyNoInteractions(authService, userRepository);
     }
 
@@ -368,9 +368,9 @@ class AuthControllerTest {
                 .thenThrow(new vn.edu.hcmut.co3103.identity.exception.InvalidClientException())
                 .thenThrow(new vn.edu.hcmut.co3103.identity.exception.InvalidRedirectUriException());
         expectError(LOGIN_PATH, LOGIN_JSON, 400, "Bad Request", "Client is invalid or inactive")
-                .andExpect(jsonPath("$.code").value("INVALID_CLIENT"));
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
         expectError(LOGIN_PATH, LOGIN_JSON, 400, "Bad Request", "Redirect URI is not registered for this client")
-                .andExpect(jsonPath("$.code").value("INVALID_REDIRECT_URI"));
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
 
     @ParameterizedTest(name = "login rejects {0}")
@@ -397,7 +397,7 @@ class AuthControllerTest {
                 .thenThrow(new AccountLockedException(message, lockedUntil));
 
         expectError(LOGIN_PATH, LOGIN_JSON, 423, "Locked", message)
-                .andExpect(jsonPath("$.locked_until").value(lockedUntil.toString()));
+                .andExpect(jsonPath("$.details[0].locked_until").value(lockedUntil.toString()));
         verify(authService).login(any(LoginRequest.class));
     }
 
@@ -424,17 +424,17 @@ class AuthControllerTest {
     void loginRejectsInvalidInputBeforeCallingService(String requestBody, String field, String message)
             throws Exception {
         expectError(LOGIN_PATH, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
-                .andExpect(jsonPath("$.validation_errors." + field).value(message));
+                .andExpect(jsonPath("$.details", hasSize(1)))
+                .andExpect(jsonPath("$.details[?(@.field == '" + field + "')].message").value(contains(message)));
         verifyNoInteractions(authService);
     }
 
     @Test
     void loginRejectsMissingEmailAndPassword() throws Exception {
         expectError(LOGIN_PATH, "{}", 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors", aMapWithSize(2)))
-                .andExpect(jsonPath("$.validation_errors.email").value("Email is required"))
-                .andExpect(jsonPath("$.validation_errors.password").value("Password is required"));
+                .andExpect(jsonPath("$.details", hasSize(2)))
+                .andExpect(jsonPath("$.details[?(@.field == 'email')].message").value(contains("Email is required")))
+                .andExpect(jsonPath("$.details[?(@.field == 'password')].message").value(contains("Password is required")));
         verifyNoInteractions(authService);
     }
 
@@ -445,9 +445,9 @@ class AuthControllerTest {
 
         // Whitespace can violate both constraints; their evaluation order is unspecified.
         expectError(path, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
-                .andExpect(jsonPath("$.validation_errors.email",
-                        isOneOf("Email is required", "Invalid email format")));
+                .andExpect(jsonPath("$.details", hasSize(1)))
+                .andExpect(jsonPath("$.details[?(@.field == 'email')].message",
+                        hasItem(isOneOf("Email is required", "Invalid email format"))));
         verifyNoInteractions(authService);
     }
 
@@ -455,7 +455,7 @@ class AuthControllerTest {
     @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
     void rejectsEmptyRequestBodyBeforeCallingService(String path) throws Exception {
         expectError(path, "", 400, "Bad Request", "Required request body is missing or malformed")
-                .andExpect(jsonPath("$", aMapWithSize(6)));
+                .andExpect(jsonPath("$", aMapWithSize(3)));
         verifyNoInteractions(authService);
     }
 
@@ -468,7 +468,7 @@ class AuthControllerTest {
                 """.formatted(password);
 
         expectError(path, requestBody, 400, "Bad Request", "Required request body is missing or malformed")
-                .andExpect(jsonPath("$", aMapWithSize(6)))
+                .andExpect(jsonPath("$", aMapWithSize(3)))
                 .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService);
     }
@@ -477,7 +477,7 @@ class AuthControllerTest {
     @ValueSource(strings = {REGISTER_PATH, LOGIN_PATH})
     void rejectsTruncatedJsonBeforeCallingService(String path) throws Exception {
         expectError(path, "{", 400, "Bad Request", "Required request body is missing or malformed")
-                .andExpect(jsonPath("$", aMapWithSize(6)));
+                .andExpect(jsonPath("$", aMapWithSize(3)));
         verifyNoInteractions(authService);
     }
 
@@ -498,7 +498,7 @@ class AuthControllerTest {
         }
 
         expectError(path, requestBody, 500, "Internal Server Error", "An unexpected internal error occurred")
-                .andExpect(jsonPath("$", aMapWithSize(6)))
+                .andExpect(jsonPath("$", aMapWithSize(3)))
                 .andExpect(content().string(not(containsString(internalDetails))))
                 .andExpect(content().string(not(containsString("IllegalStateException"))))
                 .andExpect(result -> assertThat(result.getResponse().getForwardedUrl()).isNull())
@@ -511,22 +511,16 @@ class AuthControllerTest {
         return mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(requestBody))
                 .andExpect(status().is(statusCode))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(statusCode))
                 .andExpect(jsonPath("$.code").value(switch (statusCode) {
-                    case 400 -> message.equals("Validation failed") ? "VALIDATION_ERROR"
-                            : message.startsWith("Client is") ? "INVALID_CLIENT"
-                            : message.startsWith("Redirect URI") ? "INVALID_REDIRECT_URI" : "INVALID_REQUEST";
+                    case 400 -> "BAD_REQUEST";
                     case 401 -> "INVALID_CREDENTIALS";
                     case 403 -> "ACCOUNT_NOT_ACTIVE";
                     case 409 -> "EMAIL_ALREADY_REGISTERED";
                     case 423 -> "LOGIN_TEMPORARILY_LOCKED";
                     default -> "INTERNAL_SERVER_ERROR";
                 }))
-                .andExpect(jsonPath("$.error").value(error))
                 .andExpect(jsonPath("$.message").value(message))
-                .andExpect(jsonPath("$.path").value(path))
                 .andExpect(jsonPath("$.lockedUntil").doesNotExist())
-                .andExpect(jsonPath("$.validationErrors").doesNotExist())
-                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+                .andExpect(jsonPath("$.validationErrors").doesNotExist());
     }
 }

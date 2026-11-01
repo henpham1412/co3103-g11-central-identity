@@ -10,6 +10,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import vn.edu.hcmut.co3103.identity.support.ErrorContractTestConfiguration;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -41,7 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(CurrentUserController.class)
-@Import({SecurityConfig.class, JwtAuthenticationFilter.class, JwtService.class})
+@Import({ErrorContractTestConfiguration.class, SecurityConfig.class, JwtAuthenticationFilter.class, JwtService.class})
 class CurrentUserControllerTest {
 
     private static final String PATH = "/api/v1/users/me";
@@ -104,9 +105,7 @@ class CurrentUserControllerTest {
         }
         mockMvc.perform(request)
                 .andExpect(status().isUnauthorized())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(401))
-                .andExpect(jsonPath("$.path").value(PATH));
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON));
         verifyNoInteractions(userRepository);
     }
 

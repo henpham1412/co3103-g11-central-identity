@@ -20,6 +20,14 @@ spring:
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD}
     hikari:
+      # Apply to every physical connection before SQL runs. Missing SET privileges fail startup.
+      # TERSE removes server-side DETAIL; disable statement/parameter dumps as well.
+      connection-init-sql: >-
+        SET log_error_verbosity = 'terse';
+        SET log_statement = 'none';
+        SET log_min_error_statement = 'panic';
+        SET log_parameter_max_length = 0;
+        SET log_parameter_max_length_on_error = 0;
       data-source-properties:
         # Omit row values from driver exception messages before Hibernate/JDBC can log them.
         # Error headers, SQLSTATEs, and constraint names remain available for diagnostics.

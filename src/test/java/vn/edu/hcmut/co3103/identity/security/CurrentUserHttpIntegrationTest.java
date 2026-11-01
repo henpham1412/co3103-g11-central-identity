@@ -36,6 +36,9 @@ import java.util.HashMap;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import static vn.edu.hcmut.co3103.identity.support.ErrorResponseAssertions.assertErrorEnvelope;
+import static vn.edu.hcmut.co3103.identity.support.ErrorResponseAssertions.validationMessage;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -206,8 +209,9 @@ class CurrentUserHttpIntegrationTest {
                     java.util.Map.of("full_name", blank, "bio", "Must not persist")), token);
             assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
             JsonNode error = objectMapper.readTree(response.body());
+            assertErrorEnvelope(error);
             assertThat(error.get("code").asText()).isEqualTo("VALIDATION_ERROR");
-            assertThat(error.get("validation_errors").has("full_name")).isTrue();
+            assertThat(validationMessage(error, "full_name")).isNotBlank();
             assertThat(objectMapper.readTree(send(path, null, token).body())).isEqualTo(before);
         }
     }
@@ -241,9 +245,10 @@ class CurrentUserHttpIntegrationTest {
         var response = patch(path, objectMapper.writeValueAsString(body), token);
         assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
         JsonNode error = objectMapper.readTree(response.body());
-        assertThat(error.get("status").asInt()).isEqualTo(400);
+        assertErrorEnvelope(error);
+
         assertThat(error.get("code").asText()).isEqualTo("VALIDATION_ERROR");
-        assertThat(error.get("validation_errors").has(field)).isTrue();
+        assertThat(validationMessage(error, field)).isNotBlank();
         assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(userBefore);
         assertThat(jdbc.queryForMap("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId())).isEqualTo(profileBefore);
     }
@@ -302,7 +307,7 @@ class CurrentUserHttpIntegrationTest {
             "\"2001-02-29\"", "\"2000-02-30\"", "\"2000-13-01\"", "\"-5000-01-01\"", "\"-999999998-01-01\""})
     void invalidBirthDateShapesNeverMutateProfileOrTimestamps(String value) throws Exception {
         assertRejectedPatchPreservesRows("{\"full_name\":\"Must not persist\",\"bio\":\"Must not persist\","
-                + "\"date_of_birth\":" + value + "}", "INVALID_REQUEST", null);
+                + "\"date_of_birth\":" + value + "}", "BAD_REQUEST", null);
     }
 
     private void assertRejectedPatchPreservesRows(String body, String code, String field) throws Exception {
@@ -319,12 +324,10 @@ class CurrentUserHttpIntegrationTest {
             var response = patch(path, body, token);
             assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
             var error = objectMapper.readTree(response.body());
+            assertErrorEnvelope(error);
             assertThat(error.get("code").asText()).isEqualTo(code);
-            assertThat(error.get("status").asInt()).isEqualTo(400);
-            assertThat(error.get("error").asText()).isEqualTo("Bad Request");
-            assertThat(error.get("path").asText()).isEqualTo(path);
-            assertThat(error.get("timestamp").asText()).isNotBlank();
-            if (field != null) assertThat(error.get("validation_errors").has(field)).isTrue();
+
+            if (field != null) assertThat(validationMessage(error, field)).isNotBlank();
             assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(userBefore);
             assertThat(jdbc.queryForMap("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId())).isEqualTo(profileBefore);
         }
@@ -399,7 +402,7 @@ class CurrentUserHttpIntegrationTest {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
         assertThat(response.headers().firstValue("Content-Type").orElse("")).startsWith("application/json");
         JsonNode error = objectMapper.readTree(response.body());
-        assertThat(error.get("status").asInt()).isEqualTo(401);
-        assertThat(error.get("path").asText()).isEqualTo(PATH);
+        assertErrorEnvelope(error);
+
     }
 }

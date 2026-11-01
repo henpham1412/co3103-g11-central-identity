@@ -35,7 +35,10 @@ import java.time.Instant;
 import java.sql.SQLException;
 import java.util.stream.Stream;
 
-import static org.hamcrest.Matchers.aMapWithSize;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.hasSize;
+import static vn.edu.hcmut.co3103.identity.support.ErrorResponseAssertions.errorEnvelope;
+
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
@@ -70,7 +73,7 @@ class GlobalExceptionHandlerTest {
     void setUp() {
         mockMvc = MockMvcBuilders.standaloneSetup(new TestAuthController(authService))
                 .setControllerAdvice(new GlobalExceptionHandler())
-                .build();
+                .alwaysExpect(errorEnvelope()).build();
     }
 
     @Test
@@ -127,7 +130,7 @@ class GlobalExceptionHandlerTest {
                 "Sensitive SQL parameters", new org.hibernate.exception.ConstraintViolationException(
                 "Sensitive database details", new SQLException("Sensitive database details", sqlState), constraint)));
         mockMvc = MockMvcBuilders.standaloneSetup(new TestAuthController(service))
-                .setControllerAdvice(new GlobalExceptionHandler()).build();
+                .setControllerAdvice(new GlobalExceptionHandler()).alwaysExpect(errorEnvelope()).build();
 
         String message = switch (status) {
             case 409 -> "Email already registered";
@@ -145,12 +148,8 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isMethodNotAllowed())
                 .andExpect(header().string("Allow", containsString("POST")))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(405))
                 .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"))
-                .andExpect(jsonPath("$.error").value("Method Not Allowed"))
-                .andExpect(jsonPath("$.message").value("Request method is not supported"))
-                .andExpect(jsonPath("$.path").value(path))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+                .andExpect(jsonPath("$.message").value("Request method is not supported"));
         verifyNoInteractions(authService);
     }
 
@@ -161,12 +160,8 @@ class GlobalExceptionHandlerTest {
                         .accept(MediaType.APPLICATION_XML).content("<request/>"))
                 .andExpect(status().isUnsupportedMediaType())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(415))
                 .andExpect(jsonPath("$.code").value("UNSUPPORTED_MEDIA_TYPE"))
-                .andExpect(jsonPath("$.error").value("Unsupported Media Type"))
-                .andExpect(jsonPath("$.message").value("Request media type is not supported"))
-                .andExpect(jsonPath("$.path").value(path))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+                .andExpect(jsonPath("$.message").value("Request media type is not supported"));
         verifyNoInteractions(authService);
     }
 
@@ -218,7 +213,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void validationAndMalformedJsonErrorsIgnoreUnsupportedAcceptHeader() throws Exception {
         expectError(REGISTER_PATH, "{}", 400, "Bad Request", "Validation failed", "application/xml")
-                .andExpect(jsonPath("$.validation_errors", aMapWithSize(3)));
+                .andExpect(jsonPath("$.details", hasSize(3)));
         expectError(REGISTER_PATH, "{", 400, "Bad Request",
                 "Required request body is missing or malformed", "application/xml");
         verifyNoInteractions(authService);
@@ -240,7 +235,7 @@ class GlobalExceptionHandlerTest {
                 .thenThrow(new AccountLockedException(message, lockedUntil));
 
         expectError(LOGIN_PATH, LOGIN_JSON, 423, "Locked", message)
-                .andExpect(jsonPath("$.locked_until").value(lockedUntil.toString()));
+                .andExpect(jsonPath("$.details[0].locked_until").value(lockedUntil.toString()));
     }
 
     @Test
@@ -258,12 +253,11 @@ class GlobalExceptionHandlerTest {
                 """;
 
         expectError(REGISTER_PATH, invalidRequest, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors", aMapWithSize(3)))
-                .andExpect(jsonPath("$.validation_errors.email").value("Invalid email format"))
-                .andExpect(jsonPath("$.validation_errors.password")
-                        .value("Password must be between 8 and 128 characters"))
-                .andExpect(jsonPath("$.validation_errors.full_name").value("Full name is required"))
-                .andExpect(jsonPath("$.validation_errors.fullName").doesNotExist());
+                .andExpect(jsonPath("$.details", hasSize(3)))
+                .andExpect(jsonPath("$.details[?(@.field == 'email')].message").value(contains("Invalid email format")))
+                .andExpect(jsonPath("$.details[?(@.field == 'password')].message").value(contains("Password must be between 8 and 128 characters")))
+                .andExpect(jsonPath("$.details[?(@.field == 'full_name')].message").value(contains("Full name is required")))
+                .andExpect(jsonPath("$.details[?(@.field == 'fullName')].message").doesNotExist());
         verifyNoInteractions(authService);
     }
 
@@ -274,9 +268,9 @@ class GlobalExceptionHandlerTest {
                 .replace("}", ",\"client_id\":\"invalid client\"}");
 
         expectError(path, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
-                .andExpect(jsonPath("$.validation_errors.client_id").value("Client ID must not contain whitespace"))
-                .andExpect(jsonPath("$.validation_errors.clientId").doesNotExist());
+                .andExpect(jsonPath("$.details", hasSize(1)))
+                .andExpect(jsonPath("$.details[?(@.field == 'client_id')].message").value(contains("Client ID must not contain whitespace")))
+                .andExpect(jsonPath("$.details[?(@.field == 'clientId')].message").doesNotExist());
         verifyNoInteractions(authService);
     }
 
@@ -287,17 +281,17 @@ class GlobalExceptionHandlerTest {
                 """;
 
         expectError(REGISTER_PATH, invalidRequest, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors", aMapWithSize(1)))
-                .andExpect(jsonPath("$.validation_errors.password").isNotEmpty());
+                .andExpect(jsonPath("$.details", hasSize(1)))
+                .andExpect(jsonPath("$.details[?(@.field == 'password')].message").isNotEmpty());
         verifyNoInteractions(authService);
     }
 
     @Test
     void invalidLoginReturnsBadRequestBeforeCallingService() throws Exception {
         expectError(LOGIN_PATH, "{}", 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors", aMapWithSize(2)))
-                .andExpect(jsonPath("$.validation_errors.email").value("Email is required"))
-                .andExpect(jsonPath("$.validation_errors.password").value("Password is required"));
+                .andExpect(jsonPath("$.details", hasSize(2)))
+                .andExpect(jsonPath("$.details[?(@.field == 'email')].message").value(contains("Email is required")))
+                .andExpect(jsonPath("$.details[?(@.field == 'password')].message").value(contains("Password is required")));
         verifyNoInteractions(authService);
     }
 
@@ -311,9 +305,8 @@ class GlobalExceptionHandlerTest {
         return mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).accept(accept).content(requestBody))
                 .andExpect(status().is(statusCode))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(statusCode))
                 .andExpect(jsonPath("$.code").value(switch (statusCode) {
-                    case 400 -> message.equals("Validation failed") ? "VALIDATION_ERROR" : "INVALID_REQUEST";
+                    case 400 -> "BAD_REQUEST";
                     case 401 -> "INVALID_CREDENTIALS";
                     case 403 -> message.equals("Access is denied") ? "ACCESS_DENIED" : "ACCOUNT_NOT_ACTIVE";
                     case 404 -> "RESOURCE_NOT_FOUND";
@@ -323,12 +316,9 @@ class GlobalExceptionHandlerTest {
                     case 423 -> "LOGIN_TEMPORARILY_LOCKED";
                     default -> "INTERNAL_SERVER_ERROR";
                 }))
-                .andExpect(jsonPath("$.error").value(error))
                 .andExpect(jsonPath("$.message").value(message))
-                .andExpect(jsonPath("$.path").value(path))
                 .andExpect(jsonPath("$.lockedUntil").doesNotExist())
-                .andExpect(jsonPath("$.validationErrors").doesNotExist())
-                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+                .andExpect(jsonPath("$.validationErrors").doesNotExist());
     }
 
     @RestController

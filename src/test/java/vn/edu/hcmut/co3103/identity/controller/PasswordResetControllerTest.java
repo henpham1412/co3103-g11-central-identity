@@ -6,6 +6,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import vn.edu.hcmut.co3103.identity.support.ErrorContractTestConfiguration;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -16,6 +17,7 @@ import vn.edu.hcmut.co3103.identity.security.jwt.JwtAuthenticationFilter;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 import vn.edu.hcmut.co3103.identity.service.PasswordResetService;
 
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.aMapWithSize;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -25,7 +27,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(PasswordResetController.class)
-@Import({SecurityConfig.class, JwtAuthenticationFilter.class, JwtService.class, vn.edu.hcmut.co3103.identity.web.ClientIpResolver.class})
+@Import({ErrorContractTestConfiguration.class, SecurityConfig.class, JwtAuthenticationFilter.class, JwtService.class, vn.edu.hcmut.co3103.identity.web.ClientIpResolver.class})
 class PasswordResetControllerTest {
     @Autowired private MockMvc mvc;
     @MockitoBean private PasswordResetService service;
@@ -56,7 +58,7 @@ class PasswordResetControllerTest {
                 .content("{\"email\":\"student@example.com\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
-                .andExpect(jsonPath("$.validation_errors.email").value("Email must be valid Unicode"))
+                .andExpect(jsonPath("$.details[?(@.field == \'email\')].message").value(contains("Email must be valid Unicode")))
                 .andExpect(header().doesNotExist("Retry-After"));
         verifyNoInteractions(users);
     }
@@ -111,9 +113,7 @@ class PasswordResetControllerTest {
                         .content("{\"token\":\"" + token + "\",\"new_password\":\"NewPassword123!\"}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("INVALID_OR_EXPIRED_RESET_TOKEN"))
-                .andExpect(jsonPath("$.status").value(401))
-                .andExpect(jsonPath("$.message").value("Invalid or expired password reset token"))
-                .andExpect(jsonPath("$.path").value("/auth/reset-password"));
+                .andExpect(jsonPath("$.message").value("Invalid or expired password reset token"));
     }
 
     @ParameterizedTest
@@ -148,7 +148,7 @@ class PasswordResetControllerTest {
                         .content("{\"token\":\"t\",\"new_password\":\"" + password + "a\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("PASSWORD_POLICY_VIOLATION"))
-                .andExpect(jsonPath("$.validation_errors.new_password").exists());
+                .andExpect(jsonPath("$.details[?(@.field == \'new_password\')].message").exists());
         verifyNoInteractions(service);
         mvc.perform(post("/auth/reset-password").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"token\":\"t\",\"new_password\":\"" + password + "\"}"))
