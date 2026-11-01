@@ -42,6 +42,7 @@ class PasswordResetServiceTest {
     @Mock private PasswordResetRepository resets;
     @Mock private PasswordEncoder encoder;
     @Mock private RecoveryQueue queue;
+    @Mock private AccountNotificationService accountNotifications;
     private final RecoveryTokens tokens = new RecoveryTokens("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=");
     private RecoveryQueue.Job job;
 
@@ -50,7 +51,7 @@ class PasswordResetServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new PasswordResetServiceImpl(users, resets, encoder, queue, tokens);
+        service = new PasswordResetServiceImpl(users, resets, encoder, queue, tokens, accountNotifications);
         user = User.builder().userId(UUID.randomUUID()).email("student@example.com")
                 .passwordHash("old-hash").fullName("Student").build();
         job = new RecoveryQueue.Job(UUID.randomUUID(), user.getEmail(), InetAddress.ofLiteral("203.0.113.9"),
@@ -135,6 +136,7 @@ class PasswordResetServiceTest {
         assertThat(reset.getUsedAt()).isBetween(before, Instant.now());
         verify(users).save(user);
         verify(resets).save(reset);
+        verify(accountNotifications).passwordChanged(user.getEmail());
     }
 
     @ParameterizedTest
@@ -171,11 +173,11 @@ class PasswordResetServiceTest {
 
     @ParameterizedTest
     @NullAndEmptySource
-    @ValueSource(strings = {"       ", "short"})
+    @ValueSource(strings = {"       ", "short", "password", "12345678", "PASSWORD", "qwertyuiop", "welcome1"})
     void serviceAlsoValidatesPasswordWhenCalledWithoutHttp(String password) {
         assertThatThrownBy(() -> service.resetPassword(new ResetPasswordRequest("raw-token", password)))
                 .isInstanceOf(IllegalArgumentException.class);
-        verifyNoInteractions(users, resets, encoder);
+        verifyNoInteractions(users, resets, encoder, accountNotifications);
     }
 
     @Test

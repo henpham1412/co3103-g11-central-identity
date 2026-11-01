@@ -98,6 +98,8 @@ class AuthServiceTest {
     private LoginPolicyProperties loginPolicyProperties = new LoginPolicyProperties();
     @InjectMocks
     private AuthService authService;
+    @Mock
+    private AccountNotificationService accountNotifications;
 
     private User user;
     private RegisterRequest registerRequest;
@@ -120,6 +122,14 @@ class AuthServiceTest {
                 .fullName(FULL_NAME)
                 .build();
         loginRequest = LoginRequest.builder().email(EMAIL).password(PASSWORD).build();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"password", "12345678", "PASSWORD", "qwertyuiop", "welcome1"})
+    void registrationRejectsCommonPasswordsBeforePersistenceOrEmail(String password) {
+        registerRequest.setPassword(password);
+        assertThrows(IllegalArgumentException.class, () -> authService.register(registerRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, accountNotifications);
     }
 
     @ParameterizedTest
@@ -150,6 +160,7 @@ class AuthServiceTest {
         stubRegistration();
 
         RegisterResponse response = authService.register(registerRequest);
+        verify(accountNotifications).registrationConfirmed(EMAIL);
 
         assertAll(
                 () -> assertEquals(USER_ID, response.getUserId()),
@@ -531,7 +542,7 @@ class AuthServiceTest {
         user.setLockedUntil(now);
         stubSuccessfulLogin();
 
-        try (MockedStatic<Instant> clock = mockStatic(Instant.class)) {
+        try (MockedStatic<Instant> clock = mockStatic(Instant.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
             clock.when(Instant::now).thenReturn(now);
 
             assertEquals(TOKEN, authService.login(loginRequest).getAccessToken());

@@ -25,6 +25,8 @@ import vn.edu.hcmut.co3103.identity.exception.InvalidRedirectUriException;
 import vn.edu.hcmut.co3103.identity.repository.LmsClientRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
+import vn.edu.hcmut.co3103.identity.security.SecurityAudit;
+import vn.edu.hcmut.co3103.identity.validation.PasswordPolicy;
 import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLengthValidator;
 
 import java.time.Instant;
@@ -45,17 +47,14 @@ public class AuthService {
     private final JwtProperties jwtProperties;
     private final LmsClientRepository lmsClientRepository;
     private final LoginPolicyProperties loginPolicyProperties;
+    private final AccountNotificationService accountNotifications;
 
     @Transactional(readOnly = false)
     public RegisterResponse register(RegisterRequest request) {
         if (!Utf8ByteLengthValidator.isValid(request.getEmail(), Integer.MAX_VALUE)) {
             throw new InvalidEmailException();
         }
-        String password = request.getPassword();
-        if (password == null || password.isBlank() || password.length() < 8
-                || !Utf8ByteLengthValidator.isValid(password, 72)) {
-            throw new IllegalArgumentException("Password does not meet the password policy");
-        }
+        PasswordPolicy.validate(request.getPassword());
         if (!Utf8ByteLengthValidator.isValid(request.getFullName(), Integer.MAX_VALUE)) {
             throw new IllegalArgumentException("Full name must be valid Unicode");
         }
@@ -81,6 +80,7 @@ public class AuthService {
             throw e;
         }
 
+        accountNotifications.registrationConfirmed(savedUser.getEmail());
         return RegisterResponse.builder()
                 .userId(savedUser.getUserId())
                 .email(savedUser.getEmail())
@@ -93,6 +93,24 @@ public class AuthService {
     @Transactional(readOnly = false,
             noRollbackFor = {InvalidCredentialsException.class, AccountLockedException.class})
     public AuthResponse login(LoginRequest request) {
+        try {
+            return authenticate(request);
+        } catch (InvalidCredentialsException | AccountLockedException | AccountInactiveException
+                 | InvalidClientException | InvalidRedirectUriException | InvalidEmailException exception) {
+            String reason = switch (exception) {
+                case AccountLockedException ignored -> "account_locked";
+                case AccountInactiveException ignored -> "account_inactive";
+                case InvalidClientException ignored -> "invalid_client";
+                case InvalidRedirectUriException ignored -> "invalid_redirect";
+                default -> "bad_credentials";
+            };
+            SecurityAudit.failure("login_failed", request.getEmail(),
+                    request.getClientId() == null ? "central-identity" : request.getClientId(), reason);
+            throw exception;
+        }
+    }
+
+    private AuthResponse authenticate(LoginRequest request) {
         if (!Utf8ByteLengthValidator.isValid(request.getEmail(), Integer.MAX_VALUE)) {
             throw new InvalidEmailException();
         }
@@ -124,6 +142,8 @@ public class AuthService {
             user.setFailedLoginAttempts(attempts);
             if (attempts >= loginPolicyProperties.getMaxFailedAttempts() && user.getLockedUntil() == null) {
                 user.setLockedUntil(now.plus(loginPolicyProperties.getLockoutDuration()));
+                SecurityAudit.failureAfterCommit("account_lockout", user.getUserId().toString(), clientId,
+                        "failed_attempts_limit");
             }
             userRepository.save(user);
             throw new InvalidCredentialsException("Invalid email or password");
@@ -139,6 +159,7 @@ public class AuthService {
         userRepository.save(user);
         String token = jwtService.generateToken(user, clientId);
         long expiresInSeconds = jwtProperties.getExpirationMs() / 1000;
+        SecurityAudit.success("login_succeeded", user.getUserId().toString(), clientId);
         return AuthResponse.builder()
                 .accessToken(token)
                 .tokenType("Bearer")

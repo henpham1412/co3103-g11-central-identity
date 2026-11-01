@@ -213,6 +213,9 @@ Tokens issued before this contract that omit `clientId` require login again.
 Tokens may omit `aud` for compatibility. When present, it must be the exact string
 `central-identity` or an array of nonblank strings containing that value. Foreign-only,
 null, empty, or malformed audiences are rejected; `clientId` does not override this restriction.
+Temporal claims follow [RFC 7519 NumericDate](https://www.rfc-editor.org/rfc/rfc7519#section-2):
+`exp` is required; `iat` and `nbf` may be absent. Every present temporal claim must be a finite
+JSON number. Strings, nulls, booleans, arrays, and objects are rejected before claim coercion.
 
 Authentication request and response JSON uses snake_case. Registration accepts `email`, `password`,
 `full_name`, and optional `client_id`, and returns `message`, `user_id`, `email`, `full_name`, and `status`.
@@ -271,6 +274,23 @@ are available at `/auth/register`, `/auth/login`, and `/users/me`, with compatib
 `/api/v1`. Request bodies must be JSON objects with the documented fields and string types;
 unknown fields, duplicate keys, trailing values, and implicit number/boolean-to-string conversions
 are rejected before business logic. Passwords require at least 8 characters and at most 72 UTF-8 bytes.
+Registration and password reset also reject a local, case-insensitive blocklist of more than 100
+common passwords. Login remains compatible with existing password hashes. Registration policy
+errors use `BAD_REQUEST`; reset policy errors use `PASSWORD_POLICY_VIOLATION`.
+
+After a successful database commit, registration sends an account confirmation (the account stays
+`ACTIVE`) and password reset sends a password-change security notice. Neither notice contains a
+password or reset token. A separate bounded executor (2 workers, 100 queued notices) performs SMTP
+outside the transaction. These informational notices are best effort: process shutdown, saturation,
+or SMTP failure may prevent delivery; they have no durable retry queue. Failures produce a safe
+`account_notification_failed` event and cannot fail the committed operation. Password recovery links
+continue to use the durable queue described below.
+
+The `SecurityAudit` logger emits one-line JSON at INFO for committed login successes and password
+reset requests/successes, and WARN for login failures, committed account lockouts, and authentication
+failures. Fields are `event`, `identifier` (user UUID or attempted email), `client_id`, `reason`, `ip`
+(socket peer), and `user_agent`. Untrusted metadata is JSON-escaped and bounded to 256 characters;
+passwords, hashes, tokens, authorization headers, and request bodies are never audit fields.
 
 `GET /api/v1/users/me` and `/api/v1/users/me/profile` return exactly the DOC-05 account fields
 (`user_id`, `email`, `full_name`, `status`, `profile`). The optional profile is `null` when absent.

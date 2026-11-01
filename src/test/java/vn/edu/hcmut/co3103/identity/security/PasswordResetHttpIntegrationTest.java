@@ -81,8 +81,11 @@ class PasswordResetHttpIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private HikariDataSource dataSource;
     @Autowired private ObjectMapper mapper;
+    @Autowired private vn.edu.hcmut.co3103.identity.service.PasswordResetService resetService;
+    @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
     @Autowired @Qualifier("recoveryIssuanceExecutor") private ThreadPoolTaskExecutor executor;
     @Autowired @Qualifier("recoveryDeliveryExecutor") private ThreadPoolTaskExecutor deliveryExecutor;
+    @Autowired @Qualifier("accountNotificationExecutor") private ThreadPoolTaskExecutor noticeExecutor;
     @MockitoSpyBean private vn.edu.hcmut.co3103.identity.repository.RecoveryQueue queue;
 
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
@@ -149,8 +152,8 @@ class PasswordResetHttpIntegrationTest {
         awaitIdle();
         var issued = resets.findByUserIdOrderByCreatedAtDesc(user.getUserId());
         assertThat(issued).hasSize(status == UserStatus.ACTIVE ? 1 : 0);
-        assertThat(mailbox.getMessages()).hasSize(status == UserStatus.ACTIVE ? 1 : 0);
-        assertThat(mailbox.getMessages()).allSatisfy(message -> assertThat(message.getTo()).containsExactly(user.getEmail()));
+        assertThat(resetLinkMessages()).hasSize(status == UserStatus.ACTIVE ? 1 : 0);
+        assertThat(resetLinkMessages()).allSatisfy(message -> assertThat(message.getTo()).containsExactly(user.getEmail()));
         if (status != UserStatus.ACTIVE) verifyNoInteractions(notifications);
     }
 
@@ -168,7 +171,7 @@ class PasswordResetHttpIntegrationTest {
         assertThat(duplicate.body()).isEqualTo(unknown.body());
         awaitIdle();
         assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
-        assertThat(mailbox.getMessages()).hasSize(1);
+        assertThat(resetLinkMessages()).hasSize(1);
 
         jdbc.update("UPDATE password_resets SET created_at = CURRENT_TIMESTAMP - INTERVAL '61 seconds' WHERE user_id = ?",
                 user.getUserId());
@@ -176,7 +179,7 @@ class PasswordResetHttpIntegrationTest {
         awaitIdle();
         assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(2)
                 .extracting(PasswordReset::getTokenHash).doesNotHaveDuplicates();
-        assertThat(mailbox.getMessages()).hasSize(2);
+        assertThat(resetLinkMessages()).hasSize(2);
     }
 
     @Test
@@ -202,7 +205,7 @@ class PasswordResetHttpIntegrationTest {
         }
         awaitIdle();
         assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
-        assertThat(mailbox.getMessages()).hasSize(1);
+        assertThat(resetLinkMessages()).hasSize(1);
     }
 
     @Test
@@ -222,7 +225,7 @@ class PasswordResetHttpIntegrationTest {
         }
         awaitIdle();
         assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
-        assertThat(mailbox.getMessages()).hasSize(1);
+        assertThat(resetLinkMessages()).hasSize(1);
     }
 
     @Test
@@ -236,12 +239,12 @@ class PasswordResetHttpIntegrationTest {
                     assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1));
             assertThat(jdbc.queryForObject("SELECT count(*) FROM recovery_jobs WHERE state = 'DELIVERY'", Integer.class))
                     .isEqualTo(1);
-            assertThat(mailbox.getMessages()).isEmpty();
+            assertThat(resetLinkMessages()).isEmpty();
         } finally {
             release.countDown();
         }
         awaitIdle();
-        assertThat(mailbox.getMessages()).hasSize(1);
+        assertThat(resetLinkMessages()).hasSize(1);
     }
 
     @Test
@@ -300,6 +303,8 @@ class PasswordResetHttpIntegrationTest {
             assertThat(encoder.matches(winningPassword, users.findById(user.getUserId()).orElseThrow().getPasswordHash())).isTrue();
         }
         assertThat(resets.findByTokenHash(hash(token)).orElseThrow().getUsedAt()).isNotNull();
+        awaitIdle();
+        assertThat(changedPasswordMessages()).hasSize(1);
     }
 
     @Test
@@ -313,6 +318,8 @@ class PasswordResetHttpIntegrationTest {
         PasswordReset reset = resets.findByTokenHash(hash(token)).orElseThrow();
         assertThat(reset.isUsed()).isFalse();
         assertThat(reset.getUsedAt()).isNull();
+        awaitIdle();
+        assertThat(changedPasswordMessages()).isEmpty();
     }
 
     @Test
@@ -363,7 +370,7 @@ class PasswordResetHttpIntegrationTest {
             for (User user : recipients) {
                 assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
             }
-            assertThat(mailbox.getMessages()).isEmpty();
+            assertThat(resetLinkMessages()).isEmpty();
 
             // Borrow the entire real Hikari pool and execute SQL before allowing SMTP to finish.
             try (var first = dataSource.getConnection(); var second = dataSource.getConnection();
@@ -380,7 +387,7 @@ class PasswordResetHttpIntegrationTest {
             release.countDown();
             awaitIdle();
         }
-        assertThat(mailbox.getMessages()).hasSize(requestCount);
+        assertThat(resetLinkMessages()).hasSize(requestCount);
     }
 
     @ParameterizedTest
@@ -411,7 +418,7 @@ class PasswordResetHttpIntegrationTest {
                     user.getEmail());
             String warning = "delivery failed; retained for retry (job " + jobId;
             assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
-            assertThat(mailbox.getMessages()).isEmpty();
+            assertThat(resetLinkMessages()).isEmpty();
             var token = ArgumentCaptor.forClass(String.class);
             verify(notifications, atLeastOnce()).send(eq(user.getEmail()), token.capture());
             // Force the first log check to happen before the send throws; only then release the worker.
@@ -429,7 +436,7 @@ class PasswordResetHttpIntegrationTest {
             jdbc.update("UPDATE recovery_jobs SET available_at = CURRENT_TIMESTAMP");
             awaitIdle();
         }
-        assertThat(mailbox.getMessages()).hasSize(1);
+        assertThat(resetLinkMessages()).hasSize(1);
         var unknown = post(prefix + "/forgot-password", "{\"email\":\"unknown@example.com\"}");
         assertThat(unknown.statusCode()).isEqualTo(response.statusCode());
         assertThat(unknown.body()).isEqualTo(response.body());
@@ -445,7 +452,7 @@ class PasswordResetHttpIntegrationTest {
             verify(queue, timeout(10000)).ready(any(), any(), any());
             await().atMost(Duration.ofSeconds(5)).until(() -> executor.getActiveCount() == 0);
             assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).isEmpty();
-            assertThat(mailbox.getMessages()).isEmpty();
+            assertThat(resetLinkMessages()).isEmpty();
             assertThat(jdbc.queryForObject("SELECT state FROM recovery_jobs WHERE email = ?", String.class, user.getEmail()))
                     .isEqualTo("REQUESTED");
         } finally {
@@ -454,7 +461,7 @@ class PasswordResetHttpIntegrationTest {
         }
         awaitIdle();
         assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
-        assertThat(mailbox.getMessages()).hasSize(1);
+        assertThat(resetLinkMessages()).hasSize(1);
         assertThat(output.getAll()).doesNotContain("https://frontend.example/reset-password?token=");
     }
 
@@ -560,7 +567,7 @@ class PasswordResetHttpIntegrationTest {
         assertThat(jdbc.queryForList("SELECT * FROM user_profiles")).isEqualTo(profilesBefore);
         assertThat(jdbc.queryForList("SELECT * FROM recovery_admissions")).isEqualTo(admissionsBefore);
         assertThat(resets.count()).isEqualTo(resetsBefore);
-        assertThat(mailbox.getMessages()).isEmpty();
+        assertThat(resetLinkMessages()).isEmpty();
         verify(queue, never()).admit(anyString(), any());
         verify(notifications, never()).send(anyString(), anyString());
     }
@@ -606,14 +613,14 @@ class PasswordResetHttpIntegrationTest {
     }
 
     private String deliveredLink(User user) {
-        await().atMost(Duration.ofSeconds(10)).until(() -> !mailbox.getMessages().isEmpty());
+        await().atMost(Duration.ofSeconds(10)).until(() -> !resetLinkMessages().isEmpty());
         awaitIdle();
-        assertThat(mailbox.getMessages()).singleElement().satisfies(message -> {
+        assertThat(resetLinkMessages()).singleElement().satisfies(message -> {
             assertThat(message.getFrom()).isEqualTo("identity@example.com");
             assertThat(message.getTo()).containsExactly(user.getEmail());
             assertThat(message.getSubject()).isEqualTo("Reset your Central Identity password");
         });
-        return mailbox.getMessages().getFirst().getText().lines()
+        return resetLinkMessages().getFirst().getText().lines()
                 .filter(line -> line.startsWith("https://frontend.example/reset-password?token="))
                 .findFirst().orElseThrow();
     }
@@ -621,7 +628,94 @@ class PasswordResetHttpIntegrationTest {
     private void awaitIdle() {
         await().atMost(Duration.ofSeconds(10)).until(() -> executor.getActiveCount() == 0
                 && deliveryExecutor.getActiveCount() == 0
+                && noticeExecutor.getActiveCount() == 0 && noticeExecutor.getThreadPoolExecutor().getQueue().isEmpty()
                 && jdbc.queryForObject("SELECT count(*) FROM recovery_jobs", Integer.class) == 0);
+    }
+
+    private List<org.springframework.mail.SimpleMailMessage> resetLinkMessages() {
+        return mailbox.getMessages().stream()
+                .filter(mail -> "Reset your Central Identity password".equals(mail.getSubject())).toList();
+    }
+
+    private List<org.springframework.mail.SimpleMailMessage> changedPasswordMessages() {
+        return mailbox.getMessages().stream()
+                .filter(mail -> "Your password has been changed".equals(mail.getSubject())).toList();
+    }
+
+    @Test
+    void outerRollbackSuppressesResetNoticeAndSuccessAudit(CapturedOutput output) throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        String token = requestToken("/auth", user);
+        int logOffset = output.getAll().length();
+        new org.springframework.transaction.support.TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            resetService.resetPassword(new vn.edu.hcmut.co3103.identity.dto.auth.request.ResetPasswordRequest(token, NEW_PASSWORD));
+            assertThat(changedPasswordMessages()).isEmpty();
+            status.setRollbackOnly();
+        });
+        awaitIdle();
+        assertThat(changedPasswordMessages()).isEmpty();
+        assertThat(resets.findByTokenHash(hash(token)).orElseThrow().isUsed()).isFalse();
+        assertThat(users.findById(user.getUserId()).orElseThrow().getPasswordHash()).isEqualTo(user.getPasswordHash());
+        assertThat(output.getAll().substring(logOffset)).doesNotContain("password_reset_succeeded", token, NEW_PASSWORD);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"password", "12345678", "PASSWORD", "qwertyuiop", "welcome1"})
+    void commonPasswordsCannotConsumeResetTokensOnEitherPrefix(String password) throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        String token = requestToken("/auth", user);
+        for (String prefix : List.of("/auth", "/api/v1/auth")) {
+            assertValidation(post(prefix + "/reset-password", resetBody(token, password)),
+                    "PASSWORD_POLICY_VIOLATION", "new_password");
+        }
+        assertThat(resets.findByTokenHash(hash(token)).orElseThrow().isUsed()).isFalse();
+        assertThat(users.findById(user.getUserId()).orElseThrow().getPasswordHash()).isEqualTo(user.getPasswordHash());
+        awaitIdle();
+        assertThat(changedPasswordMessages()).isEmpty();
+        assertThat(post("/auth/reset-password", resetBody(token, NEW_PASSWORD)).statusCode()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/auth", "/api/v1/auth"})
+    void successfulResetDeliversExactlyOneNotificationAfterCommit(String prefix, CapturedOutput output) throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        String token = requestToken(prefix, user);
+        java.util.concurrent.atomic.AtomicBoolean sawCommittedPassword = new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(invocation -> {
+            org.springframework.mail.SimpleMailMessage message = invocation.getArgument(0);
+            if ("Your password has been changed".equals(message.getSubject())) {
+                assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+                sawCommittedPassword.set(encoder.matches(NEW_PASSWORD,
+                        users.findById(user.getUserId()).orElseThrow().getPasswordHash()));
+            }
+            return invocation.callRealMethod();
+        }).when(mailbox).send(any(org.springframework.mail.SimpleMailMessage.class));
+        assertThat(post(prefix + "/reset-password", resetBody(token, NEW_PASSWORD)).statusCode()).isEqualTo(200);
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(changedPasswordMessages()).hasSize(1));
+        assertThat(sawCommittedPassword).isTrue();
+        assertThat(changedPasswordMessages()).singleElement().satisfies(mail -> {
+            assertThat(mail.getTo()).containsExactly(user.getEmail());
+            assertThat(mail.getText()).doesNotContain(token, OLD_PASSWORD, NEW_PASSWORD, "token=");
+        });
+        assertInvalid(post(prefix + "/reset-password", resetBody(token, NEW_PASSWORD)));
+        awaitIdle();
+        assertThat(changedPasswordMessages()).hasSize(1);
+        assertThat(output.getAll()).contains("password_reset_requested", "password_reset_succeeded")
+                .doesNotContain(token, OLD_PASSWORD, NEW_PASSWORD);
+    }
+
+    @Test
+    void notificationSmtpFailureDoesNotBreakResetOrExposeDetails(CapturedOutput output) throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        String token = requestToken("/auth", user);
+        doThrow(new org.springframework.mail.MailSendException("private-mail-secret " + token))
+                .when(mailbox).send(any(org.springframework.mail.SimpleMailMessage.class));
+        assertThat(post("/auth/reset-password", resetBody(token, NEW_PASSWORD)).statusCode()).isEqualTo(200);
+        awaitIdle();
+        assertThat(resets.findByTokenHash(hash(token)).orElseThrow().isUsed()).isTrue();
+        assertThat(encoder.matches(NEW_PASSWORD, users.findById(user.getUserId()).orElseThrow().getPasswordHash())).isTrue();
+        assertThat(output.getAll()).contains("event=account_notification_failed")
+                .doesNotContain("private-mail-secret", token, NEW_PASSWORD);
     }
 
     private void saturateExecutor(ThreadPoolTaskExecutor pool, CountDownLatch release) throws InterruptedException {

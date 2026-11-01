@@ -128,7 +128,8 @@ class AuthControllerTest {
         String rawEmail = "   STUDENT.WHITESPACE@EXAMPLE.COM   ";
         String normalizedEmail = "student.whitespace@example.com";
         AuthService realService = new AuthService(userRepository, passwordEncoder, jwtService, jwtProperties,
-                lmsClientRepository, new LoginPolicyProperties());
+                lmsClientRepository, new LoginPolicyProperties(),
+                org.mockito.Mockito.mock(vn.edu.hcmut.co3103.identity.service.AccountNotificationService.class));
         when(lmsClientRepository.findByClientIdAndIsActiveTrue("lms-client"))
                 .thenReturn(Optional.of(LmsClient.builder().clientId("lms-client")
                         .redirectUris(java.util.List.of("https://lms.example.com/auth/callback")).build()));

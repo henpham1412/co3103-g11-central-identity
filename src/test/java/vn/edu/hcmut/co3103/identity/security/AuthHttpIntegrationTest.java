@@ -39,12 +39,44 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Real HTTP, production security, and committed PostgreSQL transactions (no test rollback). */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
 class AuthHttpIntegrationTest {
 
     private static final String REGISTER_PATH = "/api/v1/auth/register";
     private static final String LOGIN_PATH = "/api/v1/auth/login";
     private static final String MISSING_PATH = "/api/v1/does-not-exist";
     private static final String PASSWORD = "Password123!";
+
+    @Autowired
+    private vn.edu.hcmut.co3103.identity.support.InMemoryMailSender mailbox;
+
+    @ParameterizedTest
+    @ValueSource(strings = {"password", "12345678", "PASSWORD", "123456789", "qwertyuiop", "welcome1"})
+    void commonPasswordsCannotRegisterOnEitherRoutePrefix(String password) throws Exception {
+        for (String path : List.of("/auth/register", REGISTER_PATH)) {
+            String email = newEmail();
+            var response = send("POST", path, registerBody(email, password), "application/json", null);
+            var error = assertError(response, 400, path);
+            assertThat(validationMessage(error, "password")).isEqualTo("Password does not meet the password policy");
+            assertThat(countUsers(email)).isZero();
+            assertThat(mailbox.getMessages()).noneSatisfy(mail -> assertThat(mail.getTo()).contains(email));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/auth/register", REGISTER_PATH})
+    void registrationSendsConfirmationForCommittedActiveUser(String path) throws Exception {
+        String email = newEmail();
+        var response = send("POST", path, registerBody(email, PASSWORD), "application/json", null);
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(userRepository.findByEmail(email).orElseThrow().getStatus()).isEqualTo(UserStatus.ACTIVE);
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(mailbox.getMessages().stream().filter(mail -> List.of(mail.getTo()).contains(email)).toList())
+                        .singleElement().satisfies(mail -> {
+                            assertThat(mail.getSubject()).isEqualTo("Welcome to Central Identity");
+                            assertThat(mail.getText()).contains("active").doesNotContain(PASSWORD, "token=");
+                        }));
+    }
 
     @Value("${local.server.port}")
     private int port;
@@ -60,10 +92,60 @@ class AuthHttpIntegrationTest {
     private ObjectMapper objectMapper;
     @Autowired
     private LmsClientRepository lmsClientRepository;
+    @Autowired
+    private vn.edu.hcmut.co3103.identity.service.AuthService authService;
+    @Autowired
+    private org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final Set<String> testEmails = new HashSet<>();
     private final Set<String> testClientIds = new HashSet<>();
+
+    @Test
+    void rolledBackRegistrationDoesNotSendConfirmation() {
+        String email = newEmail();
+        new org.springframework.transaction.support.TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            authService.register(vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest.builder()
+                    .email(email).fullName("Rollback Student").password(PASSWORD).build());
+            assertThat(mailbox.getMessages()).noneSatisfy(mail -> assertThat(mail.getTo()).contains(email));
+            status.setRollbackOnly();
+        });
+        assertThat(userRepository.findByEmail(email)).isEmpty();
+        assertThat(mailbox.getMessages()).noneSatisfy(mail -> assertThat(mail.getTo()).contains(email));
+    }
+
+    @Test
+    void authDecisionsEmitStructuredAuditEventsWithoutSecrets(org.springframework.boot.test.system.CapturedOutput output)
+            throws Exception {
+        User user = createUser();
+        String wrongPassword = "private-wrong-password-marker";
+        var success = send("POST", LOGIN_PATH, loginBody(user.getEmail(), PASSWORD), "application/json", null);
+        assertThat(success.statusCode()).isEqualTo(200);
+        String token = objectMapper.readTree(success.body()).get("access_token").asText();
+        for (int i = 0; i < 5; i++) {
+            assertThat(send("POST", LOGIN_PATH, loginBody(user.getEmail(), wrongPassword), "application/json", null)
+                    .statusCode()).isEqualTo(401);
+        }
+        assertThat(send("POST", LOGIN_PATH, loginBody(user.getEmail(), PASSWORD), "application/json", null)
+                .statusCode()).isEqualTo(423);
+        User inactive = createUser();
+        inactive.setStatus(UserStatus.SUSPENDED);
+        userRepository.saveAndFlush(inactive);
+        assertThat(send("POST", LOGIN_PATH, loginBody(inactive.getEmail(), PASSWORD), "application/json", null)
+                .statusCode()).isEqualTo(403);
+        String unknown = newEmail();
+        assertThat(send("POST", LOGIN_PATH, loginBody(unknown, wrongPassword), "application/json", null)
+                .statusCode()).isEqualTo(401);
+        assertThat(send("GET", "/api/v1/users/me", null, "application/json", "private-invalid-jwt-marker")
+                .statusCode()).isEqualTo(401);
+        assertThat(output.getAll()).contains("\"event\":\"login_succeeded\"", "\"event\":\"login_failed\"",
+                        "\"event\":\"account_lockout\"", "\"reason\":\"account_locked\"",
+                        "\"reason\":\"account_inactive\"", "\"reason\":\"bad_credentials\"",
+                        "\"reason\":\"invalid_jwt\"", "\"event\":\"authentication_failed\"",
+                        "\"client_id\":\"central-identity\"", "\"user_agent\":\"security-regression-client\"",
+                        user.getUserId().toString(), user.getEmail(), unknown)
+                .doesNotContain(PASSWORD, wrongPassword, token, "private-invalid-jwt-marker", user.getPasswordHash());
+    }
 
     @Test
     void invalidAuthRequestsUseBadRequestWithoutChangingAccounts() throws Exception {
@@ -438,7 +520,7 @@ class AuthHttpIntegrationTest {
     private HttpResponse<String> send(String method, String path, String body, String accept, String token)
             throws Exception {
         var builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
-                .timeout(Duration.ofSeconds(15));
+                .timeout(Duration.ofSeconds(15)).header("User-Agent", "security-regression-client");
         if (accept != null) {
             builder.header("Accept", accept);
         }

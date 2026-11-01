@@ -78,6 +78,14 @@ public class JwtService {
                     @Override
                     protected Map<String, ?> doDeserialize(Reader reader) {
                         Map<String, ?> values = mapper.readValue(reader, new TypeReference<Map<String, ?>>() {});
+                        // RFC 7519 NumericDate: validate before JJWT coerces strings or drops nulls.
+                        for (String name : List.of("exp", "iat", "nbf")) {
+                            if (values.containsKey(name)
+                                    && (!(values.get(name) instanceof Number number)
+                                        || !Double.isFinite(number.doubleValue()))) {
+                                throw new JwtException("JWT temporal claim must be a finite JSON number: " + name);
+                            }
+                        }
                         // Validate raw JSON: JJWT drops empty claims and normalizes audience values.
                         if (values.containsKey("aud")) {
                             Object audience = values.get("aud");

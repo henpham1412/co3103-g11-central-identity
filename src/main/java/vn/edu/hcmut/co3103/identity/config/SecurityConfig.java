@@ -37,6 +37,7 @@ import vn.edu.hcmut.co3103.identity.exception.ApiErrorResponse;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtAuthenticationFilter;
 import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
+import vn.edu.hcmut.co3103.identity.security.SecurityAudit;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -117,6 +118,7 @@ public class SecurityConfig {
                                            String code, String message) throws IOException {
         response.setStatus(status.value());
         if (status == HttpStatus.UNAUTHORIZED) {
+            SecurityAudit.failure("authentication_failed", null, null, "authentication_required", request);
             response.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Bearer realm=\"central-identity\"");
         }
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);

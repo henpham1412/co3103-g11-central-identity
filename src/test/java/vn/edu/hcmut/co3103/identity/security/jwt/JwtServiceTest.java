@@ -640,7 +640,9 @@ class JwtServiceTest {
 
     private String signClaims(Map<String, Object> claims) {
         Map<String, Object> payload = new HashMap<>(claims);
-        payload.put("exp", Instant.now().plusSeconds(60).getEpochSecond());
+        if (!payload.containsKey("exp")) {
+            payload.put("exp", Instant.now().plusSeconds(60).getEpochSecond());
+        }
         // Sign raw JSON so the builder cannot reject malformed reserved claims before our parser sees them.
         return Jwts.builder().header().keyId(keyId).and()
                 .content(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsBytes(payload))
@@ -653,5 +655,44 @@ class JwtServiceTest {
         assertThrows(JwtException.class, () -> jwtService.extractEmail(token));
         assertThrows(JwtException.class, () -> jwtService.extractUserId(token));
         assertThrows(JwtException.class, () -> jwtService.extractUsername(token));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"exp", "iat", "nbf"})
+    void rejectsNonNumericTemporalClaimsBeforeCoercion(String name) {
+        for (Object value : new Object[]{"1741234567", null, true, false, Map.of(),
+                Map.of("value", 1741234567), List.of(), List.of(1741234567), "NaN", "Infinity"}) {
+            Map<String, Object> claims = validClaims();
+            claims.put(name, value);
+            assertRejected(signClaims(claims));
+        }
+        Map<String, Object> claims = validClaims();
+        claims.put("exp", Instant.now().plusSeconds(60).getEpochSecond());
+        for (String nonFinite : List.of("1e309", "-1e309", "NaN", "Infinity", "-Infinity")) {
+            claims.remove(name);
+            String json = tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(claims);
+            String payload = json.substring(0, json.length() - 1) + ",\"" + name + "\":" + nonFinite + "}";
+            assertRejected(Jwts.builder().header().keyId(keyId).and()
+                    .content(payload.getBytes(StandardCharsets.UTF_8)).signWith(signingKey, Jwts.SIG.RS256).compact());
+        }
+    }
+
+    @Test
+    void acceptsFiniteIntegerAndFractionalNumericDatesAndOptionalAbsence() {
+        assertAccepted(signClaims(validClaims()));
+        for (double fraction : new double[]{0, 0.25}) {
+            Map<String, Object> claims = validClaims();
+            claims.put("exp", Instant.now().plusSeconds(120).getEpochSecond() + fraction);
+            claims.put("iat", Instant.now().minusSeconds(60).getEpochSecond() + fraction);
+            claims.put("nbf", Instant.now().minusSeconds(60).getEpochSecond() + fraction);
+            assertAccepted(signClaims(claims));
+        }
+    }
+
+    @Test
+    void expirationRemainsRequiredWithOtherwiseValidIdentityClaims() {
+        assertRejected(Jwts.builder().header().keyId(keyId).and()
+                .content(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsBytes(validClaims()))
+                .signWith(signingKey, Jwts.SIG.RS256).compact());
     }
 }

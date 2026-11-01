@@ -27,6 +27,7 @@ import java.util.List;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest;
 import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLengthValidator;
+import vn.edu.hcmut.co3103.identity.security.SecurityAudit;
 
 @RestControllerAdvice
 @Slf4j
@@ -46,6 +47,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(InvalidPasswordResetTokenException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidPasswordResetToken(
             InvalidPasswordResetTokenException exception, HttpServletRequest request) {
+        SecurityAudit.failure("authentication_failed", null, "central-identity", "invalid_reset_token", request);
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).contentType(MediaType.APPLICATION_JSON)
                 .header(HttpHeaders.WWW_AUTHENTICATE, BEARER_CHALLENGE)
                 .body(errorResponse(HttpStatus.UNAUTHORIZED, exception.getMessage(), request)
@@ -181,6 +183,17 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
                         .code("BAD_REQUEST").details(List.of(Map.of("field", "email", "message", exception.getMessage()))).build());
+    }
+
+    @ExceptionHandler(PasswordPolicyViolationException.class)
+    public ResponseEntity<ApiErrorResponse> handlePasswordPolicy(
+            PasswordPolicyViolationException exception, HttpServletRequest request) {
+        boolean reset = request.getRequestURI().endsWith("/reset-password");
+        return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
+                        .code(reset ? "PASSWORD_POLICY_VIOLATION" : "BAD_REQUEST")
+                        .details(List.of(Map.of("field", reset ? "new_password" : "password",
+                                "message", exception.getMessage()))).build());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

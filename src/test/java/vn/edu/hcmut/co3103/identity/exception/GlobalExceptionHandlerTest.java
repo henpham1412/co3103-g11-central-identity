@@ -125,7 +125,8 @@ class GlobalExceptionHandlerTest {
         AuthService service = new AuthService(repository, mock(PasswordEncoder.class),
                 mock(JwtService.class), new JwtProperties(),
                 mock(vn.edu.hcmut.co3103.identity.repository.LmsClientRepository.class),
-                new vn.edu.hcmut.co3103.identity.config.LoginPolicyProperties());
+                new vn.edu.hcmut.co3103.identity.config.LoginPolicyProperties(),
+                mock(vn.edu.hcmut.co3103.identity.service.AccountNotificationService.class));
         when(repository.saveAndFlush(any(User.class))).thenThrow(new DataIntegrityViolationException(
                 "Sensitive SQL parameters", new org.hibernate.exception.ConstraintViolationException(
                 "Sensitive database details", new SQLException("Sensitive database details", sqlState), constraint)));

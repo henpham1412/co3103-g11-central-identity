@@ -434,4 +434,27 @@ class CurrentUserHttpIntegrationTest {
         JsonNode error = objectMapper.readTree(response.body());
         assertErrorEnvelope(error);
     }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"exp", "iat", "nbf"})
+    void malformedNumericDatesReturnTheStandard401OnBothRoutePrefixes(String claim) throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Profile Student")
+                .passwordHash("unused-test-hash").build());
+        var claims = new HashMap<>(jwtService.extractClaim(jwtService.generateToken(user), value -> value));
+        claims.remove(claim);
+        String json = objectMapper.writeValueAsString(claims);
+        String kid = (String) jwtService.getJwks().get("keys").getFirst().get("kid");
+        for (String value : new String[]{"\"1741234567\"", "null", "{}", "[]", "[1741234567]",
+                "true", "false", "1e309", "-1e309", "NaN", "Infinity"}) {
+            String payload = json.substring(0, json.length() - 1) + ",\"" + claim + "\":" + value + "}";
+            String token = Jwts.builder().header().keyId(kid).and()
+                    .content(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                    .signWith(JwtTestKeys.KEY_PAIR.getPrivate(), Jwts.SIG.RS256).compact();
+            for (String path : new String[]{"/users/me", PATH}) {
+                assertUnauthorized(send(path, null, token));
+                assertUnauthorized(patch(path, "{\"full_name\":\"Must not change\"}", token));
+            }
+        }
+        assertThat(userRepository.findById(user.getUserId()).orElseThrow().getFullName()).isEqualTo("Profile Student");
+    }
 }

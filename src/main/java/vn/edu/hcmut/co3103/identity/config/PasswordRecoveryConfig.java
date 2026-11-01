@@ -9,6 +9,13 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 @EnableScheduling
 public class PasswordRecoveryConfig {
     @Bean
+    public ThreadPoolTaskExecutor accountNotificationExecutor() {
+        ThreadPoolTaskExecutor executor = executor(2, "account-notice-");
+        executor.setQueueCapacity(100);
+        return executor;
+    }
+
+    @Bean
     public ThreadPoolTaskExecutor recoveryIssuanceExecutor() { return executor(2, "recovery-issue-"); }
 
     @Bean
