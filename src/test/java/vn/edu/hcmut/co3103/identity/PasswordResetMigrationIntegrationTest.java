@@ -22,6 +22,36 @@ class PasswordResetMigrationIntegrationTest {
     private JdbcTemplate jdbc;
 
     @Test
+    void upgradesV5WithDurableQueueWithoutChangingExistingTokensOrMigrationHistory() {
+        String schema = "recovery_queue_migration_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).target("5").load().migrate();
+            var history = jdbc.queryForList("SELECT version, checksum FROM " + schema
+                    + ".flyway_schema_history WHERE version IS NOT NULL ORDER BY installed_rank");
+            UUID userId = UUID.randomUUID();
+            UUID resetId = UUID.randomUUID();
+            jdbc.update("INSERT INTO " + schema + ".users (user_id, email, password_hash, full_name) VALUES (?, ?, ?, ?)",
+                    userId, "migration@example.com", "test-hash", "Migration Test");
+            jdbc.update("INSERT INTO " + schema
+                    + ".password_resets (reset_id, user_id, token_hash, expires_at, is_used, ip_requested)"
+                    + " VALUES (?, ?, ?, CURRENT_TIMESTAMP + INTERVAL '15 minutes', TRUE, '192.0.2.1')",
+                    resetId, userId, "existing-hash");
+            var before = jdbc.queryForMap("SELECT * FROM " + schema + ".password_resets WHERE reset_id = ?", resetId);
+            var flyway = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).target("6").load();
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+            flyway.validate();
+            assertThat(jdbc.queryForList("SELECT version, checksum FROM " + schema
+                    + ".flyway_schema_history WHERE version IN ('1','2','3','4','5') ORDER BY installed_rank")).isEqualTo(history);
+            assertThat(jdbc.queryForMap("SELECT * FROM " + schema + ".password_resets WHERE reset_id = ?", resetId)).isEqualTo(before);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + schema + ".recovery_jobs", Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + schema + ".recovery_admissions", Integer.class)).isZero();
+            assertThat(flyway.migrate().migrationsExecuted).isZero();
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
+    @Test
     void upgradesV4WithoutReactivatingLegacyConsumedTokens() {
         String schema = "reset_timestamp_migration_" + UUID.randomUUID().toString().replace("-", "");
         try {

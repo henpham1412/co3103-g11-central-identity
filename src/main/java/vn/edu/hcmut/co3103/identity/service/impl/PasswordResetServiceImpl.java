@@ -1,7 +1,6 @@
 package vn.edu.hcmut.co3103.identity.service.impl;
 
 import lombok.RequiredArgsConstructor;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -13,16 +12,16 @@ import vn.edu.hcmut.co3103.identity.entity.UserStatus;
 import vn.edu.hcmut.co3103.identity.exception.InvalidPasswordResetTokenException;
 import vn.edu.hcmut.co3103.identity.repository.PasswordResetRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
-import vn.edu.hcmut.co3103.identity.service.PasswordResetNotificationService;
+import vn.edu.hcmut.co3103.identity.repository.RecoveryQueue;
+import vn.edu.hcmut.co3103.identity.service.RecoveryTokens;
 import vn.edu.hcmut.co3103.identity.service.PasswordResetService;
 
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.HexFormat;
 
 @Service
@@ -30,36 +29,43 @@ import java.util.HexFormat;
 public class PasswordResetServiceImpl implements PasswordResetService {
     private static final Duration TOKEN_LIFETIME = Duration.ofMinutes(15);
     private static final Duration REQUEST_COOLDOWN = Duration.ofMinutes(1);
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final UserRepository userRepository;
     private final PasswordResetRepository passwordResetRepository;
     private final PasswordEncoder passwordEncoder;
-    private final PasswordResetNotificationService notifications;
+    private final RecoveryQueue queue;
+    private final RecoveryTokens tokens;
 
-    // Return the same HTTP acknowledgement before any account-dependent DB or delivery work.
+    // Commit durable admission before acknowledging; no account lookup or SMTP on the HTTP thread.
     @Override
-    @Async
     @Transactional
-    public void forgotPassword(ForgotPasswordRequest request) {
+    public void forgotPassword(ForgotPasswordRequest request, InetAddress clientIp) {
+        queue.admit(request.getEmail(), clientIp);
+    }
+
+    @Override
+    @Transactional
+    public void issuePasswordReset(RecoveryQueue.Job job) {
+        if (!queue.lockRequest(job)) return;
         // Serialize issuance for this normalized email, including across application instances.
-        User user = userRepository.findByEmailForUpdate(request.getEmail()).orElse(null);
+        User user = userRepository.findByEmailForUpdate(job.email()).orElse(null);
         if (user == null || user.getStatus() != UserStatus.ACTIVE) {
+            queue.complete(job);
             return;
         }
 
         Instant now = Instant.now();
         if (passwordResetRepository.existsByUserIdAndCreatedAtAfter(user.getUserId(), now.minus(REQUEST_COOLDOWN))) {
+            queue.complete(job);
             return;
         }
 
-        byte[] bytes = new byte[32];
-        RANDOM.nextBytes(bytes);
-        String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-        passwordResetRepository.save(PasswordReset.builder()
-                .userId(user.getUserId()).tokenHash(hashToken(token))
+        String token = tokens.token(job.id());
+        PasswordReset reset = passwordResetRepository.saveAndFlush(PasswordReset.builder()
+                .userId(user.getUserId()).tokenHash(hashToken(token)).ipRequested(job.clientIp())
                 .expiresAt(now.plus(TOKEN_LIFETIME)).build());
-        notifications.send(user.getEmail(), token);
+        // The token and delivery job become visible together, or both roll back.
+        queue.ready(job, reset.getResetId(), reset.getExpiresAt());
     }
 
     @Override

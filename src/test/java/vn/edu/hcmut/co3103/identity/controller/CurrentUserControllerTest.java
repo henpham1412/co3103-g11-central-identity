@@ -80,12 +80,14 @@ class CurrentUserControllerTest {
         mockMvc.perform(get(PATH).header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$", aMapWithSize(8)))
-                .andExpect(jsonPath("$.id").value(user.getUserId().toString()))
+                .andExpect(jsonPath("$", aMapWithSize(5)))
+                .andExpect(jsonPath("$.user_id").value(user.getUserId().toString()))
                 .andExpect(jsonPath("$.email").value(user.getEmail()))
-                .andExpect(jsonPath("$.fullName").value("Updated Student"))
+                .andExpect(jsonPath("$.full_name").value("Updated Student"))
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
-                .andExpect(jsonPath("$.role").value("USER"))
+                .andExpect(jsonPath("$.role").doesNotExist())
+                .andExpect(jsonPath("$.id").doesNotExist())
+                .andExpect(jsonPath("$.fullName").doesNotExist())
                 .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
                 .andExpect(result -> assertNull(result.getRequest().getSession(false)));
         verify(userRepository).findById(user.getUserId());

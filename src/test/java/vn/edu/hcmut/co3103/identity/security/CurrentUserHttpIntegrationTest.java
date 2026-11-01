@@ -84,12 +84,12 @@ class CurrentUserHttpIntegrationTest {
         HttpResponse<String> response = send(PATH, null, token);
         assertThat(response.statusCode()).isEqualTo(200);
         JsonNode profile = objectMapper.readTree(response.body());
-        assertThat(profile.size()).isEqualTo(8);
-        assertThat(profile.get("id").asText()).isEqualTo(user.getUserId().toString());
+        assertThat(profile.propertyNames()).containsExactlyInAnyOrder("user_id", "email", "full_name", "status", "profile");
+        assertThat(profile.has("id")).isFalse();
         assertThat(profile.get("email").asText()).isEqualTo(email);
-        assertThat(profile.get("fullName").asText()).isEqualTo("Profile Student");
+        assertThat(profile.has("fullName")).isFalse();
         assertThat(profile.get("status").asText()).isEqualTo("ACTIVE");
-        assertThat(profile.get("role").asText()).isEqualTo("USER");
+        assertThat(profile.has("role")).isFalse();
         assertThat(profile.get("user_id").asText()).isEqualTo(user.getUserId().toString());
         assertThat(profile.get("full_name").asText()).isEqualTo("Profile Student");
         assertThat(profile.get("profile").isNull()).isTrue();
@@ -128,7 +128,7 @@ class CurrentUserHttpIntegrationTest {
         assertThat(updated.statusCode()).isEqualTo(200);
         JsonNode updatedProfile = objectMapper.readTree(updated.body());
         assertThat(updatedProfile.get("full_name").asText()).isEqualTo("Updated Profile Student");
-        assertThat(updatedProfile.get("fullName")).isEqualTo(updatedProfile.get("full_name"));
+        assertThat(updatedProfile.has("fullName")).isFalse();
         assertThat(updatedProfile.get("profile").get("bio").asText()).isEqualTo("Software Engineering Student");
         assertProfileRoutesMatch(token, updatedProfile);
 
@@ -283,7 +283,14 @@ class CurrentUserHttpIntegrationTest {
         for (String path : new String[]{"/users/me", "/api/v1/users/me", "/users/me/profile", "/api/v1/users/me/profile"}) {
             HttpResponse<String> response = send(path, null, token);
             assertThat(response.statusCode()).as(path + ": " + response.body()).isEqualTo(200);
-            assertThat(objectMapper.readTree(response.body())).isEqualTo(expected);
+            var actual = (tools.jackson.databind.node.ObjectNode) objectMapper.readTree(response.body());
+            if (path.startsWith("/users/")) {
+                assertThat(actual.size()).isEqualTo(8);
+                assertThat(actual.remove("id")).isEqualTo(expected.get("user_id"));
+                assertThat(actual.remove("fullName")).isEqualTo(expected.get("full_name"));
+                assertThat(actual.remove("role").asText()).isEqualTo("USER");
+            }
+            assertThat(actual).isEqualTo(expected);
         }
     }
 

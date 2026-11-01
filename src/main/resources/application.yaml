@@ -1,12 +1,6 @@
 spring:
   application:
     name: co3103-g11-central-identity
-  task:
-    execution:
-      pool:
-        core-size: 8
-        max-size: 8
-        queue-capacity: 100
   mail:
     host: ${MAIL_HOST:smtp.gmail.com}
     port: ${MAIL_PORT:587}
@@ -49,5 +43,12 @@ jwt:
   refresh-expiration-ms: ${JWT_REFRESH_EXPIRATION_MS:604800000}
 
 server:
+  # Preserve the socket peer for explicit proxy allowlisting in ClientIpResolver.
+  forward-headers-strategy: none
   port: ${SERVER_PORT:8080}
+
+app:
+  recovery:
+    token-key: ${RECOVERY_TOKEN_KEY:}
+    trusted-proxies: ${RECOVERY_TRUSTED_PROXIES:}
 

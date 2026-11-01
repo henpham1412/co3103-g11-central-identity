@@ -227,10 +227,11 @@ are available at `/auth/register`, `/auth/login`, and `/users/me`, with compatib
 unknown fields, duplicate keys, trailing values, and implicit number/boolean-to-string conversions
 are rejected before business logic. Passwords require at least 8 characters and at most 72 UTF-8 bytes.
 
-`GET /users/me` returns the DOC-05 account fields (`user_id`, `email`, `full_name`, `status`) and
-the nested `profile`, or `profile: null` when no optional profile row exists. The original `id`,
-`fullName`, and `role` fields remain available for existing clients. `/users/me/profile` is an
-alias of this response; both routes also support the `/api/v1` prefix.
+`GET /api/v1/users/me` and `/api/v1/users/me/profile` return exactly the DOC-05 account fields
+(`user_id`, `email`, `full_name`, `status`, `profile`). The optional profile is `null` when absent.
+A single LEFT JOIN projection reads account and profile from one committed database snapshot,
+including during concurrent PATCH. Unversioned `/users/me` and `/users/me/profile` additionally
+retain `id`, `fullName`, and `role: "USER"` for compatibility; this role is not an LMS permission.
 `PATCH /users/me` preserves omitted fields. Explicit `null` clears `avatar_url`, `bio`,
 `phone_number`, `date_of_birth`, `locale`, or `timezone`; `full_name: null` preserves the required name.
 The returned `updated_at` is the flushed profile timestamp and exactly matches the stored value.
@@ -239,17 +240,49 @@ inclusive. These field constraints return HTTP 400 / `VALIDATION_ERROR` with fie
 
 Password recovery is available at `POST /auth/forgot-password` and `POST /auth/reset-password`,
 including their `/api/v1/auth` aliases. Both routes are public. Forgot-password accepts `email`
-and always acknowledges valid input with the same message, regardless of account existence or status.
-Requests for the same normalized email within one minute of the last issued token keep that
-acknowledgement but issue no new token or email, even if the previous token was consumed.
-The cooldown is checked under a database row lock so concurrent requests share the same limit.
-Account lookup, token persistence, and reset-link delivery run asynchronously so account-dependent work
-does not delay the HTTP acknowledgement. The application executor has eight workers and a queue
-capacity of 100; rejected recovery requests retain the generic acknowledgement. The queue is in memory;
-queued requests are not durable across a process restart. After the token transaction commits, delivery is
-submitted as a separate task to the application executor, allowing the transaction to release
-its database connection even if SMTP stalls. A rejected submission is logged without attempting
-SMTP on the committing thread; the user can request another email after the cooldown.
+and returns the same DOC-05 acknowledgement for every **accepted** request, regardless of
+account existence or status. Migration V6 adds a durable PostgreSQL request/delivery queue.
+Admission commits before HTTP 200; account lookup happens later. Two issuance workers are
+separate from four SMTP workers. Both executors have zero in-memory backlog: when a pool is
+full, unclaimed work stays in PostgreSQL. Token persistence and transition to delivery commit
+atomically. SMTP never runs inside a database transaction.
+
+Admission uses a database-wide lock and rolling 60-second budgets before account lookup, including
+for unknown addresses. Defaults are 20 requests per IP, 10 per normalized email, 200 globally,
+and 1,000 outstanding jobs. Configure `app.recovery.per-ip-per-minute`, `per-email-per-minute`,
+`global-per-minute`, and `capacity` to fit deployment traffic. These limits are shared by all
+instances using the database. Exceeding a budget returns HTTP 429 / `RECOVERY_RATE_LIMITED`;
+queue capacity or database unavailability returns HTTP 503 / `RECOVERY_UNAVAILABLE`.
+Both carry `Retry-After: 60` and the same generic message for existing and nonexistent accounts.
+Clients should retry on these explicit responses. Account issuance still has a one-minute cooldown,
+checked under its user row lock; accepted duplicates during cooldown create no additional token.
+Expired admission history is pruned and is bounded by the global budget.
+
+Set `RECOVERY_TOKEN_KEY` to a base64-encoded **32-byte cryptographically random secret** before
+starting the application. Generate one with `openssl rand -base64 32`, keep it in the deployment
+secret store, and share the same persistent key across instances/restarts. Do not reuse the JWT
+signing key. Startup fails if this key is missing or malformed. Tokens are HMAC-SHA256 outputs
+(domain-separated by `ci-password-recovery-v1:` and a random request UUID), encoded as base64url.
+This lets a restarted worker reconstruct the same link without storing raw reset credentials;
+only SHA-256 token hashes are stored in `password_resets`. The job stores request metadata and
+a reset ID. A changed key cannot send mismatched links: the worker checks the stored hash first.
+For planned rotation, pause admission at ingress, drain pending jobs (or allow issued links to
+expire), and replace the secret on every instance together. Existing token hashes remain valid.
+
+Workers poll every 250 ms. Failed issuance/delivery remains queued with exponential backoff
+(2 seconds through 60 seconds); a 60-second claim lease recovers interrupted workers. Delivery
+retries end when the token expires after 15 minutes; expiry cleanup logs the undelivered count.
+Delivery is at least once: SMTP acceptance followed by a connection/process failure can produce
+a duplicate of the same link. Monitor queued job age/count and the retry/expiry warnings.
+
+`ip_requested` preserves the initiating client address through queueing and retries. By default
+all forwarding headers are ignored. Set `RECOVERY_TRUSTED_PROXIES` to a comma-separated list of
+managed proxy IPs/CIDRs only. The resolver walks all `X-Forwarded-For` values from right to left,
+stopping at the first untrusted hop, and accepts numeric IP literals only. Ingress must overwrite
+or correctly append the actual peer to incoming X-Forwarded-For. Keep
+`server.forward-headers-strategy=none` so container/framework rewriting cannot bypass this trust
+boundary. `Forwarded` and `X-Real-IP` do not override it. Avoid trusting entire client networks.
+
 Configure `app.reset-password.base-url`
 (`APP_RESET_PASSWORD_BASE_URL` in the environment); it defaults to
 `http://localhost:3000/reset-password`. Links have the form `<base-url>?token=<token>`.
@@ -258,20 +291,19 @@ Set `MAIL_USERNAME` to the sending Gmail address and `MAIL_PASSWORD` to its app 
 required STARTTLS, certificate hostname verification, and five-second connection/read/write timeouts.
 `MAIL_HOST` and `MAIL_PORT` can select another SMTP provider; Spring's `spring.mail` properties
 can override the remaining settings. SMTP debug output is disabled. Do not commit mail credentials.
-Delivery makes at most three attempts with the same link. If all fail, the worker logs only the
-recipient, attempt count, and exception type, then stops. The HTTP acknowledgement stays generic;
-the persisted token expires normally and the user can request another email. A transport failure
-after SMTP acceptance can cause a duplicate email. Tokens, links, passwords, message bodies, and
-mail exception contents are never logged by the notification service.
+Recovery logs contain job IDs and exception types only, never tokens, links, passwords,
+message bodies, or transport exception contents.
 
 Tests activate the `test` profile and replace SMTP with `InMemoryMailSender`, a thread-safe mailbox
 under `src/test/java` that is excluded from the production JAR. Tests and audit probes can autowire
 it and inspect `getMessages()` for recipient, sender, subject, and reset link, then `clear()` it.
-No external SMTP credentials or network calls are needed. Recovery HTTP tests extract their tokens
+No external SMTP credentials are needed. A separate `smtp-test` fixture uses the production
+JavaMailSender against a loopback SMTP server with the default 5-second timeouts; TLS/authentication
+are disabled only for this fixture. Other recovery HTTP tests extract their tokens
 from this mailbox and verify commit/rollback behavior, delivery failures, and credential log hygiene.
 
-Only ACTIVE users receive a token. Tokens contain 32 secure random bytes encoded as base64url,
-expire after 15 minutes, and are stored only as SHA-256 hashes. Reset-password accepts `token`
+Only ACTIVE users receive a token. Tokens expire after 15 minutes and are stored only as SHA-256 hashes.
+Reset-password accepts `token`
 and `new_password`, uses the configured BCrypt encoder, and consumes the token atomically with
 the password update. Row locks prevent concurrent token reuse and password overwrites by login.
 Migration V5 adds `used_at`; legacy `is_used` flags remain authoritative for previously consumed tokens.

@@ -61,8 +61,10 @@ class UserServiceTest {
         profile.setLocale("vi-VN");
         profile.setTimezone("Asia/Ho_Chi_Minh");
 
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-        when(userProfileRepository.findById(userId)).thenReturn(Optional.of(profile));
+        when(userRepository.findCurrentProfile(userId)).thenReturn(Optional.of(
+                new CurrentUserProfileResponse(userId, user.getEmail(), user.getFullName(), user.getStatus(),
+                        profile.getUserId(), profile.getAvatarUrl(), profile.getBio(), profile.getPhoneNumber(),
+                        profile.getDateOfBirth(), profile.getLocale(), profile.getTimezone())));
 
         CurrentUserProfileResponse response = userService.getCurrentUserProfile(userId);
 
@@ -81,8 +83,8 @@ class UserServiceTest {
 
     @Test
     void getCurrentUserProfileReturnsNullProfileWhenProfileMissing() {
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-        when(userProfileRepository.findById(userId)).thenReturn(Optional.empty());
+        when(userRepository.findCurrentProfile(userId)).thenReturn(Optional.of(
+                new CurrentUserProfileResponse(userId, user.getEmail(), user.getFullName(), user.getStatus(), null)));
 
         CurrentUserProfileResponse response = userService.getCurrentUserProfile(userId);
 
@@ -95,7 +97,7 @@ class UserServiceTest {
 
     @Test
     void getCurrentUserProfileThrowsWhenUserNotFound() {
-        when(userRepository.findById(userId)).thenReturn(Optional.empty());
+        when(userRepository.findCurrentProfile(userId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> userService.getCurrentUserProfile(userId))
                 .isInstanceOf(ResourceNotFoundException.class)

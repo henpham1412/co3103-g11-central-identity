@@ -19,6 +19,8 @@ import vn.edu.hcmut.co3103.identity.entity.UserStatus;
 import vn.edu.hcmut.co3103.identity.exception.InvalidPasswordResetTokenException;
 import vn.edu.hcmut.co3103.identity.repository.PasswordResetRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
+import vn.edu.hcmut.co3103.identity.repository.RecoveryQueue;
+import java.net.InetAddress;
 import vn.edu.hcmut.co3103.identity.service.impl.PasswordResetServiceImpl;
 
 import java.nio.charset.StandardCharsets;
@@ -39,33 +41,46 @@ class PasswordResetServiceTest {
     @Mock private UserRepository users;
     @Mock private PasswordResetRepository resets;
     @Mock private PasswordEncoder encoder;
-    @Mock private PasswordResetNotificationService notifications;
+    @Mock private RecoveryQueue queue;
+    private final RecoveryTokens tokens = new RecoveryTokens("MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=");
+    private RecoveryQueue.Job job;
 
     private PasswordResetService service;
     private User user;
 
     @BeforeEach
     void setUp() {
-        service = new PasswordResetServiceImpl(users, resets, encoder, notifications);
+        service = new PasswordResetServiceImpl(users, resets, encoder, queue, tokens);
         user = User.builder().userId(UUID.randomUUID()).email("student@example.com")
                 .passwordHash("old-hash").fullName("Student").build();
+        job = new RecoveryQueue.Job(UUID.randomUUID(), user.getEmail(), InetAddress.ofLiteral("203.0.113.9"),
+                UUID.randomUUID(), 1, null);
+        lenient().when(queue.lockRequest(job)).thenReturn(true);
+        lenient().when(resets.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    }
+
+    @Test
+    void admissionPersistsImmutableRequestMetadataBeforeAccountLookup() {
+        service.forgotPassword(new ForgotPasswordRequest("  STUDENT@EXAMPLE.COM  "), job.clientIp());
+        verify(queue).admit(user.getEmail(), job.clientIp());
+        verifyNoInteractions(users, resets, encoder);
     }
 
     @Test
     void forgotStoresOnlyHashOfFreshSecureTokenWithFifteenMinuteLifetime() throws Exception {
         when(users.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
         Instant before = Instant.now();
-        service.forgotPassword(new ForgotPasswordRequest("  STUDENT@EXAMPLE.COM  "));
+        service.issuePasswordReset(job);
 
-        var tokens = ArgumentCaptor.forClass(String.class);
         var saved = ArgumentCaptor.forClass(PasswordReset.class);
-        verify(notifications).send(eq(user.getEmail()), tokens.capture());
-        verify(resets).save(saved.capture());
-        String token = tokens.getValue();
+        verify(resets).saveAndFlush(saved.capture());
+        String token = tokens.token(job.id());
         PasswordReset reset = saved.getValue();
         assertThat(token).matches("[A-Za-z0-9_-]{43}");
         assertThat(reset.getTokenHash()).isEqualTo(hash(token)).isNotEqualTo(token);
         assertThat(reset.getUserId()).isEqualTo(user.getUserId());
+        assertThat(reset.getIpRequested()).isEqualTo(job.clientIp());
+        verify(queue).ready(job, reset.getResetId(), reset.getExpiresAt());
         assertThat(reset.getExpiresAt()).isBetween(before.plusSeconds(900), Instant.now().plusSeconds(900));
         assertThat(reset.isUsed()).isFalse();
         assertThat(reset.getUsedAt()).isNull();
@@ -77,7 +92,7 @@ class PasswordResetServiceTest {
         when(resets.existsByUserIdAndCreatedAtAfter(eq(user.getUserId()), any(Instant.class))).thenReturn(true);
         Instant before = Instant.now();
 
-        service.forgotPassword(new ForgotPasswordRequest("  STUDENT@EXAMPLE.COM  "));
+        service.issuePasswordReset(job);
 
         var cutoff = ArgumentCaptor.forClass(Instant.class);
         var order = inOrder(users, resets);
@@ -85,14 +100,15 @@ class PasswordResetServiceTest {
         order.verify(resets).existsByUserIdAndCreatedAtAfter(eq(user.getUserId()), cutoff.capture());
         assertThat(cutoff.getValue()).isBetween(before.minusSeconds(60), Instant.now().minusSeconds(60));
         verify(resets, never()).save(any());
-        verifyNoInteractions(encoder, notifications);
+        verify(resets, never()).saveAndFlush(any());
+        verifyNoInteractions(encoder);
     }
 
     @Test
     void forgotUnknownEmailDoesNotIssueToken() {
         when(users.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.empty());
-        service.forgotPassword(new ForgotPasswordRequest(user.getEmail()));
-        verifyNoInteractions(resets, encoder, notifications);
+        service.issuePasswordReset(job);
+        verifyNoInteractions(resets, encoder);
     }
 
     @ParameterizedTest
@@ -100,8 +116,8 @@ class PasswordResetServiceTest {
     void forgotNonActiveUserDoesNotIssueToken(UserStatus status) {
         user.setStatus(status);
         when(users.findByEmailForUpdate(user.getEmail())).thenReturn(Optional.of(user));
-        service.forgotPassword(new ForgotPasswordRequest(user.getEmail()));
-        verifyNoInteractions(resets, encoder, notifications);
+        service.issuePasswordReset(job);
+        verifyNoInteractions(resets, encoder);
     }
 
     @Test
@@ -134,8 +150,9 @@ class PasswordResetServiceTest {
         assertThatThrownBy(() -> service.resetPassword(new ResetPasswordRequest("raw-token", "NewPassword123!")))
                 .isInstanceOf(InvalidPasswordResetTokenException.class)
                 .hasMessage("Invalid or expired password reset token");
-        verifyNoInteractions(users, encoder, notifications);
+        verifyNoInteractions(users, encoder);
         verify(resets, never()).save(any());
+        verify(resets, never()).saveAndFlush(any());
     }
 
     @ParameterizedTest
@@ -149,6 +166,7 @@ class PasswordResetServiceTest {
                 .isInstanceOf(InvalidPasswordResetTokenException.class);
         verifyNoInteractions(encoder);
         verify(resets, never()).save(any());
+        verify(resets, never()).saveAndFlush(any());
     }
 
     @ParameterizedTest

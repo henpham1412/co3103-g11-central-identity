@@ -192,7 +192,7 @@ class ProfileRecoveryDtoTest {
     }
 
     @Test
-    void serializesCurrentProfileWithDocumentedFieldsAndLegacyIdentityAliases() {
+    void serializesCanonicalCurrentProfileWithExactlyDocumentedFields() {
         UUID userId = UUID.randomUUID();
         var profile = new UserProfileResponse("https://storage.example.com/avatar.png", "Student", "+84912345678",
                 LocalDate.of(2000, 1, 2), "vi-VN", "Asia/Ho_Chi_Minh");
@@ -200,11 +200,8 @@ class ProfileRecoveryDtoTest {
                 UserStatus.ACTIVE, profile);
         var json = mapper.readTree(mapper.writeValueAsString(response));
         assertThat(json.propertyNames()).containsExactlyInAnyOrder(
-                "user_id", "email", "full_name", "status", "profile", "id", "fullName", "role");
+                "user_id", "email", "full_name", "status", "profile");
         assertThat(json.get("user_id").asString()).isEqualTo(userId.toString());
-        assertThat(json.get("id")).isEqualTo(json.get("user_id"));
-        assertThat(json.get("fullName")).isEqualTo(json.get("full_name"));
-        assertThat(json.get("role").asString()).isEqualTo("USER");
         assertThat(json.get("profile")).isEqualTo(mapper.readTree("""
                 {"avatar_url":"https://storage.example.com/avatar.png","bio":"Student",
                  "phone_number":"+84912345678","date_of_birth":"2000-01-02",
@@ -213,6 +210,20 @@ class ProfileRecoveryDtoTest {
         var missingProfile = new CurrentUserProfileResponse(userId, "student@example.com", "Nguyen Van A",
                 UserStatus.ACTIVE, null);
         assertThat(mapper.readTree(mapper.writeValueAsString(missingProfile)).get("profile").isNull()).isTrue();
+    }
+
+    @Test
+    void legacyResponseAloneAddsCompatibilityAliases() {
+        var account = new CurrentUserProfileResponse(UUID.randomUUID(), "student@example.com", "Student",
+                UserStatus.ACTIVE, null);
+        var legacy = new vn.edu.hcmut.co3103.identity.dto.user.response.LegacyCurrentUserProfileResponse(account);
+        var json = mapper.readTree(mapper.writeValueAsString(legacy));
+        assertThat(json.propertyNames()).containsExactlyInAnyOrder(
+                "user_id", "email", "full_name", "status", "profile", "id", "fullName", "role");
+        assertThat(json.get("id")).isEqualTo(json.get("user_id"));
+        assertThat(json.get("fullName")).isEqualTo(json.get("full_name"));
+        assertThat(json.get("role").asString()).isEqualTo("USER");
+        assertThat(json.get("profile").isNull()).isTrue();
     }
 
     @ParameterizedTest

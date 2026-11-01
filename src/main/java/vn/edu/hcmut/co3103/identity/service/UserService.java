@@ -5,7 +5,6 @@ import org.springframework.transaction.annotation.Transactional;
 import vn.edu.hcmut.co3103.identity.dto.user.request.UpdateProfileRequest;
 import vn.edu.hcmut.co3103.identity.dto.user.response.CurrentUserProfileResponse;
 import vn.edu.hcmut.co3103.identity.dto.user.response.UpdateProfileResponse;
-import vn.edu.hcmut.co3103.identity.dto.user.response.UserProfileResponse;
 import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.entity.UserProfile;
 import vn.edu.hcmut.co3103.identity.exception.ResourceNotFoundException;
@@ -28,20 +27,8 @@ public class UserService {
 
     @Transactional(readOnly = true)
     public CurrentUserProfileResponse getCurrentUserProfile(UUID userId) {
-        User user = userRepository.findById(userId)
+        return userRepository.findCurrentProfile(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-
-        UserProfileResponse profileResponse = userProfileRepository.findById(userId)
-                .map(this::toUserProfileResponse)
-                .orElse(null);
-
-        return new CurrentUserProfileResponse(
-                user.getUserId(),
-                user.getEmail(),
-                user.getFullName(),
-                user.getStatus(),
-                profileResponse
-        );
     }
 
     @Transactional
@@ -87,14 +74,4 @@ public class UserService {
         return new UpdateProfileResponse("Profile updated successfully", profile.getUpdatedAt());
     }
 
-    private UserProfileResponse toUserProfileResponse(UserProfile profile) {
-        return new UserProfileResponse(
-                profile.getAvatarUrl(),
-                profile.getBio(),
-                profile.getPhoneNumber(),
-                profile.getDateOfBirth(),
-                profile.getLocale(),
-                profile.getTimezone()
-        );
-    }
 }

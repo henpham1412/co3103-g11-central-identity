@@ -27,6 +27,15 @@ import java.util.Map;
 @Slf4j
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(RecoveryUnavailableException.class)
+    public ResponseEntity<ApiErrorResponse> handleRecoveryUnavailable(
+            RecoveryUnavailableException exception, HttpServletRequest request) {
+        HttpStatus status = exception.isRateLimited() ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.SERVICE_UNAVAILABLE;
+        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).header("Retry-After", "60")
+                .body(errorResponse(status, exception.getMessage(), request)
+                        .code(exception.isRateLimited() ? "RECOVERY_RATE_LIMITED" : "RECOVERY_UNAVAILABLE").build());
+    }
+
     @ExceptionHandler(InvalidPasswordResetTokenException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidPasswordResetToken(
             InvalidPasswordResetTokenException exception, HttpServletRequest request) {

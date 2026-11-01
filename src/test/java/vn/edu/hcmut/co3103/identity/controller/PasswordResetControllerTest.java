@@ -25,11 +25,42 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(PasswordResetController.class)
-@Import({SecurityConfig.class, JwtAuthenticationFilter.class, JwtService.class})
+@Import({SecurityConfig.class, JwtAuthenticationFilter.class, JwtService.class, vn.edu.hcmut.co3103.identity.web.ClientIpResolver.class})
 class PasswordResetControllerTest {
     @Autowired private MockMvc mvc;
     @MockitoBean private PasswordResetService service;
     @MockitoBean private UserRepository users;
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void overloadIsExplicitAndUniformBeforeAccountLookup(boolean limited) throws Exception {
+        doThrow(new vn.edu.hcmut.co3103.identity.exception.RecoveryUnavailableException(limited))
+                .when(service).forgotPassword(any(), any());
+        for (String email : new String[]{"known@example.com", "missing@example.com"}) {
+            mvc.perform(post("/api/v1/auth/forgot-password").contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"email\":\"" + email + "\"}"))
+                    .andExpect(status().is(limited ? 429 : 503))
+                    .andExpect(header().string("Retry-After", "60"))
+                    .andExpect(jsonPath("$.code").value(limited ? "RECOVERY_RATE_LIMITED" : "RECOVERY_UNAVAILABLE"))
+                    .andExpect(jsonPath("$.message").value("Password recovery is temporarily busy. Please try again later."));
+        }
+        verifyNoInteractions(users);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void databaseAdmissionFailureReturnsRetrySignal(boolean transactionFailure) throws Exception {
+        RuntimeException failure = transactionFailure
+                ? new org.springframework.transaction.CannotCreateTransactionException("connection unavailable")
+                : new org.springframework.dao.DataAccessResourceFailureException("database unavailable");
+        doThrow(failure).when(service).forgotPassword(any(), any());
+        mvc.perform(post("/auth/forgot-password").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"student@example.com\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "60"))
+                .andExpect(jsonPath("$.code").value("RECOVERY_UNAVAILABLE"));
+        verifyNoInteractions(users);
+    }
 
     @ParameterizedTest
     @ValueSource(strings = {"/auth", "/api/v1/auth"})
@@ -41,7 +72,7 @@ class PasswordResetControllerTest {
                     .andExpect(jsonPath("$", aMapWithSize(1)))
                     .andExpect(jsonPath("$.message").value(
                             "If the email is eligible for recovery, password reset instructions have been sent."));
-            verify(service).forgotPassword(argThat(request -> request.getEmail().equals(email)));
+            verify(service).forgotPassword(argThat(request -> request.getEmail().equals(email)), any(java.net.InetAddress.class));
         }
     }
 

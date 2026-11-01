@@ -55,11 +55,13 @@ import static org.mockito.Mockito.*;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "app.reset-password.base-url=https://frontend.example/reset-password",
+                "app.recovery.worker-enabled=true",
                 "spring.datasource.hikari.maximum-pool-size=2",
                 "spring.datasource.hikari.minimum-idle=2",
                 "spring.datasource.hikari.connection-timeout=1000"
         })
 @ExtendWith(OutputCaptureExtension.class)
+@org.springframework.test.annotation.DirtiesContext(classMode = org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 class PasswordResetHttpIntegrationTest {
     private static final String OLD_PASSWORD = "OriginalPassword123!";
     private static final String NEW_PASSWORD = "NewPassword456!";
@@ -74,7 +76,9 @@ class PasswordResetHttpIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private HikariDataSource dataSource;
     @Autowired private ObjectMapper mapper;
-    @Autowired @Qualifier("applicationTaskExecutor") private ThreadPoolTaskExecutor executor;
+    @Autowired @Qualifier("recoveryIssuanceExecutor") private ThreadPoolTaskExecutor executor;
+    @Autowired @Qualifier("recoveryDeliveryExecutor") private ThreadPoolTaskExecutor deliveryExecutor;
+    @MockitoSpyBean private vn.edu.hcmut.co3103.identity.repository.RecoveryQueue queue;
 
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final List<UUID> userIds = new ArrayList<>();
@@ -83,6 +87,7 @@ class PasswordResetHttpIntegrationTest {
     void cleanUp() {
         awaitIdle();
         mailbox.clear();
+        jdbc.update("DELETE FROM recovery_admissions");
         for (UUID id : userIds) {
             resets.deleteByUserId(id);
             users.deleteById(id);
@@ -196,38 +201,70 @@ class PasswordResetHttpIntegrationTest {
     }
 
     @Test
-    void saturatedExecutorStillAcknowledgesRecoveryWithoutIssuingToken() throws Exception {
+    void saturatedIssuanceExecutorRetainsAcceptedRequestsUntilCapacityReturns() throws Exception {
         User user = createUser(UserStatus.ACTIVE);
-        assertThat(executor.getMaxPoolSize()).isEqualTo(8);
-        assertThat(executor.getQueueCapacity()).isEqualTo(100);
-        var entered = new CountDownLatch(8);
+        var entered = new CountDownLatch(2);
         var release = new CountDownLatch(1);
         try {
-            for (int i = 0; i < 8; i++) {
-                executor.execute(() -> {
-                    entered.countDown();
-                    try {
-                        assertThat(release.await(15, TimeUnit.SECONDS)).isTrue();
-                    } catch (InterruptedException exception) {
-                        Thread.currentThread().interrupt();
-                        throw new AssertionError(exception);
-                    }
-                });
-            }
+            for (int i = 0; i < 2; i++) executor.execute(() -> {
+                entered.countDown();
+                try { assertThat(release.await(15, TimeUnit.SECONDS)).isTrue(); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+            });
             assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
-            for (int i = 0; i < 100; i++) executor.execute(() -> {});
             for (String email : List.of(user.getEmail(), "unknown@example.com")) {
                 var response = post("/auth/forgot-password", "{\"email\":\"" + email + "\"}");
                 assertThat(response.statusCode()).isEqualTo(200);
-                assertThat(mapper.readTree(response.body()).get("message").asText()).isEqualTo(FORGOT_MESSAGE);
             }
-            verifyNoInteractions(notifications);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM recovery_jobs", Integer.class)).isEqualTo(2);
             assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).isEmpty();
+        } finally {
+            release.countDown();
+        }
+        awaitIdle();
+        assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
+        assertThat(mailbox.getMessages()).hasSize(1);
+    }
+
+    @Test
+    void saturatedDeliveryExecutorDoesNotBlockIssuanceAndRetainsDeliveryForRetry() throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        var entered = new CountDownLatch(4);
+        var release = new CountDownLatch(1);
+        try {
+            for (int i = 0; i < 4; i++) deliveryExecutor.execute(() -> {
+                entered.countDown();
+                try { assertThat(release.await(15, TimeUnit.SECONDS)).isTrue(); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+            });
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(post("/auth/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}").statusCode()).isEqualTo(200);
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                    assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1));
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM recovery_jobs WHERE state = 'DELIVERY'", Integer.class))
+                    .isEqualTo(1);
             assertThat(mailbox.getMessages()).isEmpty();
         } finally {
             release.countDown();
-            awaitIdle();
         }
+        awaitIdle();
+        assertThat(mailbox.getMessages()).hasSize(1);
+    }
+
+    @Test
+    void forgotPasswordPersistsRequestIpAndIgnoresUntrustedForwardingHeaders() throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/v1/auth/forgot-password"))
+                .header("Content-Type", "application/json").header("X-Forwarded-For", "198.51.100.42")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"" + user.getEmail() + "\"}")).build();
+        assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(200);
+        awaitIdle();
+        var reset = resets.findByUserIdOrderByCreatedAtDesc(user.getUserId()).getFirst();
+        assertThat(reset.getIpRequested().getHostAddress()).isEqualTo("127.0.0.1");
+        assertThat(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(200);
+        awaitIdle();
+        assertThat(resets.findById(reset.getResetId()).orElseThrow().getIpRequested()).isEqualTo(reset.getIpRequested());
+        assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
     }
 
     @ParameterizedTest
@@ -366,15 +403,23 @@ class PasswordResetHttpIntegrationTest {
         var response = post(prefix + "/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(mapper.readTree(response.body()).get("message").asText()).isEqualTo(FORGOT_MESSAGE);
-        verify(notifications, timeout(10000)).send(eq(user.getEmail()), anyString());
+        try {
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                    assertThat(jdbc.queryForObject("SELECT attempts FROM recovery_jobs WHERE email = ?", Integer.class,
+                            user.getEmail())).isGreaterThanOrEqualTo(1));
+            verify(mailbox, timeout(5000).atLeastOnce()).send(any(SimpleMailMessage.class));
+            assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
+            assertThat(mailbox.getMessages()).isEmpty();
+            var token = ArgumentCaptor.forClass(String.class);
+            verify(notifications, atLeastOnce()).send(eq(user.getEmail()), token.capture());
+            assertThat(output.getAll()).contains("delivery failed; retained for retry")
+                    .doesNotContain(token.getValue(), "https://frontend.example/reset-password?token=");
+        } finally {
+            doCallRealMethod().when(mailbox).send(any(SimpleMailMessage.class));
+            jdbc.update("UPDATE recovery_jobs SET available_at = CURRENT_TIMESTAMP");
+        }
         awaitIdle();
-        assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
-        assertThat(mailbox.getMessages()).isEmpty();
-        verify(mailbox, times(3)).send(any(SimpleMailMessage.class));
-        var token = ArgumentCaptor.forClass(String.class);
-        verify(notifications).send(eq(user.getEmail()), token.capture());
-        assertThat(output.getAll()).contains("delivery failed for " + user.getEmail())
-                .doesNotContain(token.getValue(), "https://frontend.example/reset-password?token=");
+        assertThat(mailbox.getMessages()).hasSize(1);
         var unknown = post(prefix + "/forgot-password", "{\"email\":\"unknown@example.com\"}");
         assertThat(unknown.statusCode()).isEqualTo(response.statusCode());
         assertThat(unknown.body()).isEqualTo(response.body());
@@ -382,20 +427,25 @@ class PasswordResetHttpIntegrationTest {
     }
 
     @Test
-    void rolledBackIssuanceDoesNotDeliverOrLogCredentials(CapturedOutput output) throws Exception {
+    void rolledBackIssuanceRetainsRequestAndNeverDeliversUncommittedToken(CapturedOutput output) throws Exception {
         User user = createUser(UserStatus.ACTIVE);
-        doAnswer(invocation -> {
-            invocation.callRealMethod();
-            throw new IllegalStateException("simulated failure after registering delivery");
-        }).when(notifications).send(eq(user.getEmail()), anyString());
-        var response = post("/auth/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
-        assertThat(response.statusCode()).isEqualTo(200);
-        var token = ArgumentCaptor.forClass(String.class);
-        verify(notifications, timeout(10000)).send(eq(user.getEmail()), token.capture());
+        doThrow(new IllegalStateException("simulated outbox failure")).when(queue).ready(any(), any(), any());
+        try {
+            assertThat(post("/auth/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}").statusCode()).isEqualTo(200);
+            verify(queue, timeout(10000)).ready(any(), any(), any());
+            await().atMost(Duration.ofSeconds(5)).until(() -> executor.getActiveCount() == 0);
+            assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).isEmpty();
+            assertThat(mailbox.getMessages()).isEmpty();
+            assertThat(jdbc.queryForObject("SELECT state FROM recovery_jobs WHERE email = ?", String.class, user.getEmail()))
+                    .isEqualTo("REQUESTED");
+        } finally {
+            doCallRealMethod().when(queue).ready(any(), any(), any());
+            jdbc.update("UPDATE recovery_jobs SET available_at = CURRENT_TIMESTAMP");
+        }
         awaitIdle();
-        assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).isEmpty();
-        assertThat(mailbox.getMessages()).isEmpty();
-        assertThat(output.getAll()).doesNotContain(token.getValue(), "https://frontend.example/reset-password?token=");
+        assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
+        assertThat(mailbox.getMessages()).hasSize(1);
+        assertThat(output.getAll()).doesNotContain("https://frontend.example/reset-password?token=");
     }
 
     @ParameterizedTest
@@ -454,7 +504,8 @@ class PasswordResetHttpIntegrationTest {
 
     private void awaitIdle() {
         await().atMost(Duration.ofSeconds(10)).until(() -> executor.getActiveCount() == 0
-                && executor.getThreadPoolExecutor().getQueue().isEmpty());
+                && deliveryExecutor.getActiveCount() == 0
+                && jdbc.queryForObject("SELECT count(*) FROM recovery_jobs", Integer.class) == 0);
     }
 
     private User createUser(UserStatus status) {
