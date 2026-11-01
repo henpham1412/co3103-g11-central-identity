@@ -231,15 +231,18 @@ class SecurityConfigTest {
     @NullAndEmptySource
     @ValueSource(strings = {"Basic dXNlcjpwYXNz", "Bearer", "Bearer ", "Bearer invalid-token"})
     void rejectsProtectedRequestWithoutValidBearerToken(String authorization) throws Exception {
-        var request = get("/api/v1/users/me");
-        if (authorization != null) {
-            request.header(HttpHeaders.AUTHORIZATION, authorization);
+        for (String path : new String[]{"/api/v1/users/me", "/api/users/me", "/users/me"}) {
+            var request = get(path);
+            if (authorization != null) {
+                request.header(HttpHeaders.AUTHORIZATION, authorization);
+            }
+            mockMvc.perform(request.accept(MediaType.APPLICATION_XML))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(header().stringValues(HttpHeaders.WWW_AUTHENTICATE, "Bearer"))
+                    .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(content().string("{\"code\":\"UNAUTHORIZED\","
+                            + "\"message\":\"Full authentication is required to access this resource\",\"details\":[]}"));
         }
-        mockMvc.perform(request.accept(MediaType.APPLICATION_XML))
-                .andExpect(status().isUnauthorized())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.message").value("Full authentication is required to access this resource"))
-                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
 
     @Test
@@ -247,6 +250,7 @@ class SecurityConfigTest {
         mockMvc.perform(get("/api/v1/admin").accept(MediaType.APPLICATION_XML)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
                 .andExpect(status().isForbidden())
+                .andExpect(header().doesNotExist(HttpHeaders.WWW_AUTHENTICATE))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.message").value("Access is denied"))
                 .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));

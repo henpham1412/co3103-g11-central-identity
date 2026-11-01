@@ -368,8 +368,9 @@ class CurrentUserHttpIntegrationTest {
                 .method("PATCH", HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
     }
 
-    @Test
-    void missingExpiredAndTamperedTokensReturnJsonUnauthorized() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"/api/v1/users/me", "/api/users/me", "/users/me"})
+    void missingExpiredAndTamperedTokensReturnBearerChallengeWithJsonUnauthorized(String path) throws Exception {
         User user = User.builder().userId(UUID.randomUUID()).email(email).fullName("Profile Student").build();
         String token = jwtService.generateToken(user);
         var claims = jwtService.extractClaim(token, value -> value);
@@ -378,7 +379,7 @@ class CurrentUserHttpIntegrationTest {
                 .expiration(Date.from(Instant.now().minusSeconds(60)))
                 .signWith(JwtTestKeys.KEY_PAIR.getPrivate(), Jwts.SIG.RS256).compact();
         for (String invalid : new String[]{null, "invalid-token", expired, token + "tampered"}) {
-            assertUnauthorized(send(PATH, null, invalid));
+            assertUnauthorized(send(path, null, invalid));
         }
     }
 
@@ -396,9 +397,11 @@ class CurrentUserHttpIntegrationTest {
 
     private void assertUnauthorized(HttpResponse<String> response) {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
-        assertThat(response.headers().firstValue("Content-Type").orElse("")).startsWith("application/json");
+        assertThat(response.headers().allValues("WWW-Authenticate")).containsExactly("Bearer");
+        assertThat(response.headers().firstValue("Content-Type")).contains("application/json");
+        assertThat(response.body()).isEqualTo("{\"code\":\"UNAUTHORIZED\","
+                + "\"message\":\"Full authentication is required to access this resource\",\"details\":[]}");
         JsonNode error = objectMapper.readTree(response.body());
         assertErrorEnvelope(error);
-
     }
 }
