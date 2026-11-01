@@ -19,6 +19,7 @@ import vn.edu.hcmut.co3103.identity.exception.AccountLockedException;
 import vn.edu.hcmut.co3103.identity.exception.DuplicateEmailException;
 import vn.edu.hcmut.co3103.identity.exception.DataIntegrityViolationClassifier;
 import vn.edu.hcmut.co3103.identity.exception.InvalidCredentialsException;
+import vn.edu.hcmut.co3103.identity.exception.InvalidEmailException;
 import vn.edu.hcmut.co3103.identity.exception.InvalidClientException;
 import vn.edu.hcmut.co3103.identity.exception.InvalidRedirectUriException;
 import vn.edu.hcmut.co3103.identity.repository.LmsClientRepository;
@@ -47,6 +48,9 @@ public class AuthService {
 
     @Transactional(readOnly = false)
     public RegisterResponse register(RegisterRequest request) {
+        if (!Utf8ByteLengthValidator.isValid(request.getEmail(), Integer.MAX_VALUE)) {
+            throw new InvalidEmailException();
+        }
         String password = request.getPassword();
         if (password == null || password.isBlank() || password.length() < 8
                 || !Utf8ByteLengthValidator.isValid(password, 72)) {
@@ -89,6 +93,9 @@ public class AuthService {
     @Transactional(readOnly = false,
             noRollbackFor = {InvalidCredentialsException.class, AccountLockedException.class})
     public AuthResponse login(LoginRequest request) {
+        if (!Utf8ByteLengthValidator.isValid(request.getEmail(), Integer.MAX_VALUE)) {
+            throw new InvalidEmailException();
+        }
         // Also protect callers that bypass HTTP bean validation, before any BCrypt work.
         if (!Utf8ByteLengthValidator.isValid(request.getPassword(), 72)) {
             throw new InvalidCredentialsException("Invalid email or password");

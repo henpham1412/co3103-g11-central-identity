@@ -9,6 +9,7 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLength;
 
 import java.util.Locale;
 
@@ -21,6 +22,7 @@ public class ForgotPasswordRequest {
     @JsonProperty("email")
     @NotBlank(message = "Email is required")
     @Email(message = "Invalid email format")
+    @Utf8ByteLength(message = "Email must be valid Unicode")
     @Size(max = 254, message = "Email must not exceed 254 characters")
     private String email;
 

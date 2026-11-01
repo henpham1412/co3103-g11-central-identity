@@ -26,6 +26,7 @@ import vn.edu.hcmut.co3103.identity.entity.User;
 import vn.edu.hcmut.co3103.identity.entity.UserStatus;
 import vn.edu.hcmut.co3103.identity.service.PasswordResetNotificationService;
 import vn.edu.hcmut.co3103.identity.support.InMemoryMailSender;
+import vn.edu.hcmut.co3103.identity.support.UnicodeInputs;
 import vn.edu.hcmut.co3103.identity.repository.PasswordResetRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 
@@ -396,29 +397,48 @@ class PasswordResetHttpIntegrationTest {
     @ValueSource(strings = {"/auth", "/api/v1/auth"})
     void deliveryFailureDoesNotRevealAccountExistenceOrLogSecrets(String prefix, CapturedOutput output) throws Exception {
         User user = createUser(UserStatus.ACTIVE);
+        var sendEntered = new CountDownLatch(1);
+        var failDelivery = new CountDownLatch(1);
+        var retryCompleted = new CountDownLatch(1);
         doAnswer(invocation -> {
             SimpleMailMessage message = invocation.getArgument(0);
+            sendEntered.countDown();
+            assertThat(failDelivery.await(10, TimeUnit.SECONDS)).as("delivery failure was released").isTrue();
             throw new MailSendException("simulated delivery failure containing body: " + message.getText());
         }).when(mailbox).send(any(SimpleMailMessage.class));
-        var response = post(prefix + "/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
-        assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(mapper.readTree(response.body()).get("message").asText()).isEqualTo(FORGOT_MESSAGE);
+        doAnswer(invocation -> {
+            Object result = invocation.callRealMethod();
+            retryCompleted.countDown();
+            return result;
+        }).when(queue).retry(any());
+        HttpResponse<String> response;
         try {
-            await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-                    assertThat(jdbc.queryForObject("SELECT attempts FROM recovery_jobs WHERE email = ?", Integer.class,
-                            user.getEmail())).isGreaterThanOrEqualTo(1));
-            verify(mailbox, timeout(5000).atLeastOnce()).send(any(SimpleMailMessage.class));
+            response = post(prefix + "/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}");
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(mapper.readTree(response.body()).get("message").asText()).isEqualTo(FORGOT_MESSAGE);
+            assertThat(sendEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            UUID jobId = jdbc.queryForObject("SELECT request_id FROM recovery_jobs WHERE email = ?", UUID.class,
+                    user.getEmail());
+            String warning = "delivery failed; retained for retry (job " + jobId;
             assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1);
             assertThat(mailbox.getMessages()).isEmpty();
             var token = ArgumentCaptor.forClass(String.class);
             verify(notifications, atLeastOnce()).send(eq(user.getEmail()), token.capture());
-            assertThat(output.getAll()).contains("delivery failed; retained for retry")
-                    .doesNotContain(token.getValue(), "https://frontend.example/reset-password?token=");
+            // Force the first log check to happen before the send throws; only then release the worker.
+            await().atMost(Duration.ofSeconds(5)).conditionEvaluationListener(condition -> failDelivery.countDown())
+                    .untilAsserted(() -> {
+                        assertThat(output.getAll()).contains(warning)
+                                .doesNotContain(token.getValue(), "https://frontend.example/reset-password?token=");
+                        assertThat(retryCompleted.getCount()).as("delivery retry state was persisted").isZero();
+                    });
         } finally {
+            failDelivery.countDown();
+            await().atMost(Duration.ofSeconds(5)).until(() -> deliveryExecutor.getActiveCount() == 0);
             doCallRealMethod().when(mailbox).send(any(SimpleMailMessage.class));
+            doCallRealMethod().when(queue).retry(any());
             jdbc.update("UPDATE recovery_jobs SET available_at = CURRENT_TIMESTAMP");
+            awaitIdle();
         }
-        awaitIdle();
         assertThat(mailbox.getMessages()).hasSize(1);
         var unknown = post(prefix + "/forgot-password", "{\"email\":\"unknown@example.com\"}");
         assertThat(unknown.statusCode()).isEqualTo(response.statusCode());
@@ -512,6 +532,66 @@ class PasswordResetHttpIntegrationTest {
             assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(before);
         }
         assertThat(post("/api/v1/auth/login", loginBody(user, "????????")).statusCode()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedEmails")
+    void malformedEmailsCannotCreateOrAliasAnIdentityOrQueueRecovery(String input) throws Exception {
+        String email = UUID.randomUUID().toString().replace("-", "") + "-" + input;
+        String substituted = new String(email.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8);
+        User user = users.saveAndFlush(User.builder().email(substituted).fullName("Email Test")
+                .passwordHash(encoder.encode(OLD_PASSWORD)).status(UserStatus.ACTIVE).failedLoginAttempts(2).build());
+        userIds.add(user.getUserId());
+        jdbc.update("INSERT INTO user_profiles(user_id, bio) VALUES (?, ?)", user.getUserId(), "Unchanged profile");
+        var userBefore = jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId());
+        var profilesBefore = jdbc.queryForList("SELECT * FROM user_profiles");
+        long usersBefore = users.count();
+        long resetsBefore = resets.count();
+        var admissionsBefore = jdbc.queryForList("SELECT * FROM recovery_admissions");
+        String quoted = UnicodeInputs.jsonString(email);
+        for (String prefix : new String[]{"/auth", "/api/v1/auth"}) {
+            assertValidation(post(prefix + "/register", "{\"email\":" + quoted
+                    + ",\"password\":\"" + OLD_PASSWORD + "\",\"full_name\":\"Email Test\"}"), "VALIDATION_ERROR", "email");
+            // A distinct address would be inserted if the registration guard were missing.
+            assertValidation(post(prefix + "/register", "{\"email\":" + UnicodeInputs.jsonString("new-" + email)
+                    + ",\"password\":\"" + OLD_PASSWORD + "\",\"full_name\":\"Email Test\"}"), "VALIDATION_ERROR", "email");
+            for (String password : new String[]{OLD_PASSWORD, "WrongPassword123!"}) {
+                assertValidation(post(prefix + "/login", "{\"email\":" + quoted + ",\"password\":\""
+                        + password + "\"}"), "VALIDATION_ERROR", "email");
+            }
+            assertValidation(post(prefix + "/forgot-password", "{\"email\":" + quoted + "}"), "BAD_REQUEST", "email");
+        }
+        awaitIdle();
+        assertThat(users.count()).isEqualTo(usersBefore);
+        assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(userBefore);
+        assertThat(jdbc.queryForList("SELECT * FROM user_profiles")).isEqualTo(profilesBefore);
+        assertThat(jdbc.queryForList("SELECT * FROM recovery_admissions")).isEqualTo(admissionsBefore);
+        assertThat(resets.count()).isEqualTo(resetsBefore);
+        assertThat(mailbox.getMessages()).isEmpty();
+        verify(queue, never()).admit(anyString(), any());
+        verify(notifications, never()).send(anyString(), anyString());
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#validEmails")
+    void wellFormedEmailsSurviveRegistrationLoginAndRecovery(String input) throws Exception {
+        for (String prefix : new String[]{"/auth", "/api/v1/auth"}) {
+            String email = UUID.randomUUID().toString().replace("-", "") + "-" + input;
+            String quoted = UnicodeInputs.jsonString("  " + email + "  ");
+            var registered = post(prefix + "/register", "{\"email\":" + quoted
+                    + ",\"password\":\"" + OLD_PASSWORD + "\",\"full_name\":\"Email Test\"}");
+            assertThat(registered.statusCode()).as(registered.body()).isEqualTo(201);
+            User user = users.findByEmail(email).orElseThrow();
+            userIds.add(user.getUserId());
+            assertThat(mapper.readTree(registered.body()).get("email").asText()).isEqualTo(email);
+            var loggedIn = post(prefix + "/login", "{\"email\":" + quoted + ",\"password\":\"" + OLD_PASSWORD + "\"}");
+            assertThat(loggedIn.statusCode()).as(loggedIn.body()).isEqualTo(200);
+            var identity = mapper.readTree(loggedIn.body()).get("user");
+            assertThat(identity.get("email").asText()).isEqualTo(email);
+            assertThat(identity.get("user_id").asText()).isEqualTo(user.getUserId().toString());
+            requestToken(prefix, user); // Includes exact recipient and persisted reset hash checks.
+            mailbox.clear();
+        }
     }
 
     private void assertValidation(HttpResponse<String> response, String code, String field) {

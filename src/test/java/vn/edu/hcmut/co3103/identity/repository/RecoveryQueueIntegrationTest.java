@@ -2,12 +2,15 @@ package vn.edu.hcmut.co3103.identity.repository;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import vn.edu.hcmut.co3103.identity.entity.User;
+import vn.edu.hcmut.co3103.identity.exception.InvalidEmailException;
 import vn.edu.hcmut.co3103.identity.exception.RecoveryUnavailableException;
 import vn.edu.hcmut.co3103.identity.service.*;
 import vn.edu.hcmut.co3103.identity.support.InMemoryMailSender;
@@ -36,6 +39,34 @@ class RecoveryQueueIntegrationTest {
         jdbc.update("DELETE FROM recovery_admissions");
         if (user != null) { resets.deleteByUserId(user.getUserId()); users.deleteById(user.getUserId()); }
         mailbox.clear();
+    }
+
+    @ParameterizedTest
+    @MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedEmails")
+    void malformedEmailCannotConsumeAdmissionBudgetOrCreateWork(String email) {
+        var ip = InetAddress.ofLiteral("192.0.2.1");
+        var connection = org.mockito.Mockito.mock(JdbcTemplate.class);
+        var directQueue = new RecoveryQueue(connection, 20, 10, 200, 1000);
+        assertThatExceptionOfType(InvalidEmailException.class).isThrownBy(() -> directQueue.admit(email, ip));
+        org.mockito.Mockito.verifyNoInteractions(connection);
+
+        var before = jdbc.queryForList("SELECT * FROM recovery_admissions");
+        assertThatExceptionOfType(InvalidEmailException.class).isThrownBy(() -> queue.admit(email, ip));
+        assertThatExceptionOfType(InvalidEmailException.class).isThrownBy(() -> service.forgotPassword(
+                new vn.edu.hcmut.co3103.identity.dto.auth.request.ForgotPasswordRequest(email), ip));
+        assertThat(jdbc.queryForList("SELECT * FROM recovery_admissions")).isEqualTo(before);
+        assertThat(jobCount()).isZero();
+        assertThat(mailbox.getMessages()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#validEmails")
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"member\ud83d\ude00@example.com"})
+    void wellFormedEmailKeepsItsIdentityAndAdmissionHash(String email) {
+        queue.admit(email, InetAddress.ofLiteral("192.0.2.1"));
+        assertThat(jdbc.queryForObject("SELECT email FROM recovery_jobs", String.class)).isEqualTo(email);
+        assertThat(jdbc.queryForObject("SELECT email_hash FROM recovery_admissions", String.class))
+                .isEqualTo(RecoveryTokens.hash(email));
     }
 
     @Test

@@ -157,6 +157,14 @@ public class GlobalExceptionHandler {
                         "Required request body is missing or malformed", request).build());
     }
 
+    @ExceptionHandler(InvalidEmailException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidEmail(
+            InvalidEmailException exception, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
+                        .code("BAD_REQUEST").validationErrors(Map.of("email", exception.getMessage())).build());
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiErrorResponse> handleIllegalArgument(
             IllegalArgumentException exception, HttpServletRequest request) {

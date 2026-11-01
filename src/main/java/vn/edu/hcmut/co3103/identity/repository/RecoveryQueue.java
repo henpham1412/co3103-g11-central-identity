@@ -5,7 +5,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 import vn.edu.hcmut.co3103.identity.exception.RecoveryUnavailableException;
+import vn.edu.hcmut.co3103.identity.exception.InvalidEmailException;
 import vn.edu.hcmut.co3103.identity.service.RecoveryTokens;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLengthValidator;
 import java.net.InetAddress;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -38,6 +40,9 @@ public class RecoveryQueue {
 
     @Transactional
     public void admit(String email, InetAddress ip) {
+        if (!Utf8ByteLengthValidator.isValid(email, Integer.MAX_VALUE)) {
+            throw new InvalidEmailException();
+        }
         // Serialize only short admission transactions; SMTP and issuance never acquire this lock.
         jdbc.execute("SET LOCAL lock_timeout = '1s'");
         jdbc.execute("SELECT pg_advisory_xact_lock(310301)");

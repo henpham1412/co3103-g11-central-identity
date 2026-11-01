@@ -48,6 +48,20 @@ class PasswordResetControllerTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"/auth", "/api/v1/auth"})
+    void emailValidationFromAdmissionRemainsABadRequest(String prefix) throws Exception {
+        doThrow(new vn.edu.hcmut.co3103.identity.exception.InvalidEmailException())
+                .when(service).forgotPassword(any(), any());
+        mvc.perform(post(prefix + "/forgot-password").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"student@example.com\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
+                .andExpect(jsonPath("$.validation_errors.email").value("Email must be valid Unicode"))
+                .andExpect(header().doesNotExist("Retry-After"));
+        verifyNoInteractions(users);
+    }
+
+    @ParameterizedTest
     @ValueSource(booleans = {true, false})
     void databaseAdmissionFailureReturnsRetrySignal(boolean transactionFailure) throws Exception {
         RuntimeException failure = transactionFailure

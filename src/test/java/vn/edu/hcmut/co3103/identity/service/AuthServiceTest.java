@@ -40,6 +40,7 @@ import vn.edu.hcmut.co3103.identity.exception.AccountInactiveException;
 import vn.edu.hcmut.co3103.identity.exception.AccountLockedException;
 import vn.edu.hcmut.co3103.identity.exception.DuplicateEmailException;
 import vn.edu.hcmut.co3103.identity.exception.InvalidCredentialsException;
+import vn.edu.hcmut.co3103.identity.exception.InvalidEmailException;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 
@@ -131,6 +132,16 @@ class AuthServiceTest {
         registerRequest.setFullName(password);
         assertThrows(IllegalArgumentException.class, () -> authService.register(registerRequest));
         verifyNoInteractions(userRepository, passwordEncoder, jwtService, lmsClientRepository);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedEmails")
+    void directEmailCallsRejectMalformedUnicodeBeforeAnyLookupOrEncoding(String email) {
+        registerRequest.setEmail(email);
+        loginRequest.setEmail(email);
+        assertThrows(InvalidEmailException.class, () -> authService.register(registerRequest));
+        assertThrows(InvalidEmailException.class, () -> authService.login(loginRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, jwtService, jwtProperties, lmsClientRepository);
     }
 
     @Test

@@ -35,6 +35,32 @@ class AuthDtoTest {
         factory.close();
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedEmails")
+    void allEmailFieldsRejectMalformedUnicode(String email) {
+        for (Object request : new Object[]{new ForgotPasswordRequest(email),
+                new RegisterRequest(email, "Password123!", "Test User", null),
+                new LoginRequest(email, "Password123!", null, null)}) {
+            var violations = validator.validate(request);
+            assertFalse(violations.isEmpty());
+            assertTrue(violations.stream().allMatch(violation -> violation.getPropertyPath().toString().equals("email")));
+        }
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#validEmails")
+    void allEmailFieldsPreserveWellFormedUnicode(String email) {
+        var forgot = new ForgotPasswordRequest(email);
+        var register = new RegisterRequest(email, "Password123!", "Test User", null);
+        var login = new LoginRequest(email, "Password123!", null, null);
+        assertEquals(email, forgot.getEmail());
+        assertEquals(email, register.getEmail());
+        assertEquals(email, login.getEmail());
+        for (Object request : new Object[]{forgot, register, login}) {
+            assertTrue(validator.validate(request).isEmpty());
+        }
+    }
+
     @Test
     void normalizesEmailsAndDefaultsTokenType() {
         RegisterRequest registerRequest = RegisterRequest.builder()
