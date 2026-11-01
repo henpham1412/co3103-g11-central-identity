@@ -1,5 +1,6 @@
 package vn.edu.hcmut.co3103.identity.service;
 
+import jakarta.validation.Validator;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import vn.edu.hcmut.co3103.identity.dto.user.request.UpdateProfileRequest;
@@ -19,10 +20,12 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final UserProfileRepository userProfileRepository;
+    private final Validator validator;
 
-    public UserService(UserRepository userRepository, UserProfileRepository userProfileRepository) {
+    public UserService(UserRepository userRepository, UserProfileRepository userProfileRepository, Validator validator) {
         this.userRepository = userRepository;
         this.userProfileRepository = userProfileRepository;
+        this.validator = validator;
     }
 
     @Transactional(readOnly = true)
@@ -33,6 +36,10 @@ public class UserService {
 
     @Transactional
     public UpdateProfileResponse updateProfile(UUID userId, UpdateProfileRequest request) {
+        // Direct callers must satisfy the same Unicode/date constraints before changing either entity.
+        if (!validator.validate(request).isEmpty()) {
+            throw new IllegalArgumentException("Profile does not meet the validation requirements");
+        }
         // Share the user row lock with password resets and login/lockout updates.
         User user = userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));

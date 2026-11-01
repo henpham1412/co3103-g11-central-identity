@@ -3,6 +3,9 @@ package vn.edu.hcmut.co3103.identity.validation;
 import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
 
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 
 public class Utf8ByteLengthValidator implements ConstraintValidator<Utf8ByteLength, String> {
@@ -16,6 +19,19 @@ public class Utf8ByteLengthValidator implements ConstraintValidator<Utf8ByteLeng
 
     @Override
     public boolean isValid(String value, ConstraintValidatorContext context) {
-        return value == null || value.getBytes(StandardCharsets.UTF_8).length <= max;
+        return isValid(value, max);
+    }
+
+    // Share the strict check with service callers before any password encoding or persistence.
+    public static boolean isValid(String value, int max) {
+        if (value == null) return true;
+        try {
+            return StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(value)).remaining() <= max;
+        } catch (CharacterCodingException exception) {
+            return false;
+        }
     }
 }

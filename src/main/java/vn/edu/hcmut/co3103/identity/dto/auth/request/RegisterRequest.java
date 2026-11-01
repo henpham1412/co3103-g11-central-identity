@@ -27,10 +27,11 @@ public class RegisterRequest {
 
     @NotBlank(message = "Password is required")
     @Size(min = 8, max = 128, message = "Password must be between 8 and 128 characters")
-    @Utf8ByteLength(max = 72, message = "Password must not exceed 72 UTF-8 bytes")
+    @Utf8ByteLength(max = 72, message = "Password must be valid Unicode and not exceed 72 UTF-8 bytes")
     private String password;
 
     @NotBlank(message = "Full name is required")
+    @Utf8ByteLength
     @Size(max = 150, message = "Full name must not exceed 150 characters")
     @Pattern(regexp = "^[^\\p{Cc}]*$", message = "Full name contains invalid characters")
     @JsonProperty("full_name")

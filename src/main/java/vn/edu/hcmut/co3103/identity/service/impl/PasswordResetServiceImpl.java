@@ -15,6 +15,7 @@ import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.repository.RecoveryQueue;
 import vn.edu.hcmut.co3103.identity.service.RecoveryTokens;
 import vn.edu.hcmut.co3103.identity.service.PasswordResetService;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLengthValidator;
 
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
@@ -73,7 +74,7 @@ public class PasswordResetServiceImpl implements PasswordResetService {
     public void resetPassword(ResetPasswordRequest request) {
         String password = request.getNewPassword();
         if (password == null || password.isBlank() || password.length() < 8
-                || password.getBytes(StandardCharsets.UTF_8).length > 72) {
+                || !Utf8ByteLengthValidator.isValid(password, 72)) {
             throw new IllegalArgumentException("Password does not meet the password policy");
         }
         if (request.getToken() == null || request.getToken().isBlank()) {

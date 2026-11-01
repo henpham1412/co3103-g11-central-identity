@@ -26,7 +26,7 @@ public class LoginRequest {
     private String email;
 
     @NotBlank(message = "Password is required")
-    @Utf8ByteLength(max = 72, message = "Password must not exceed 72 bytes")
+    @Utf8ByteLength(max = 72, message = "Password must be valid Unicode and not exceed 72 UTF-8 bytes")
     private String password;
 
     @Size(min = 1, max = 100, message = "Client ID must be between 1 and 100 characters")

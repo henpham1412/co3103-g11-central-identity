@@ -12,7 +12,10 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.hibernate.validator.constraints.URL;
+import tools.jackson.databind.annotation.JsonDeserialize;
 import vn.edu.hcmut.co3103.identity.validation.BirthDate;
+import vn.edu.hcmut.co3103.identity.validation.StrictBirthDateDeserializer;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLength;
 
 import java.time.LocalDate;
 import java.util.HashSet;
@@ -30,6 +33,7 @@ public class UpdateProfileRequest {
     private final Set<String> suppliedFields = new HashSet<>();
 
     @JsonProperty("full_name")
+    @Utf8ByteLength
     @Size(max = 150, message = "Full name must not exceed 150 characters")
     // javaWhitespace delegates to Character.isWhitespace, matching String.isBlank().
     @Pattern(regexp = "(?s).*\\P{javaWhitespace}.*", message = "Full name must not be blank")
@@ -37,28 +41,34 @@ public class UpdateProfileRequest {
     private String fullName;
 
     @JsonProperty("avatar_url")
+    @Utf8ByteLength
     @URL(regexp = "https?://.*", message = "Avatar URL must be a valid HTTP or HTTPS URL")
     private String avatarUrl;
 
     @JsonProperty("bio")
+    @Utf8ByteLength
     @Pattern(regexp = "[^\\x00]*", message = "Bio must not contain null characters")
     private String bio;
 
     @JsonProperty("phone_number")
+    @Utf8ByteLength
     @Size(max = 30, message = "Phone number must not exceed 30 characters")
     @Pattern(regexp = "[^\\x00]*", message = "Phone number must not contain null characters")
     private String phoneNumber;
 
     @JsonProperty("date_of_birth")
+    @JsonDeserialize(using = StrictBirthDateDeserializer.class)
     @BirthDate
     private LocalDate dateOfBirth;
 
     @JsonProperty("locale")
+    @Utf8ByteLength
     @Size(max = 20, message = "Locale must not exceed 20 characters")
     @Pattern(regexp = "[^\\x00]*", message = "Locale must not contain null characters")
     private String locale;
 
     @JsonProperty("timezone")
+    @Utf8ByteLength
     @Size(max = 64, message = "Timezone must not exceed 64 characters")
     @Pattern(regexp = "[^\\x00]*", message = "Timezone must not contain null characters")
     private String timezone;

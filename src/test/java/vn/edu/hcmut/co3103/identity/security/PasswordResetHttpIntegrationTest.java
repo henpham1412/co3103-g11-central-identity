@@ -469,6 +469,51 @@ class PasswordResetHttpIntegrationTest {
         assertThat(issued.getFirst().getUsedAt()).isNull();
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedUnicode")
+    void malformedPasswordsCannotResetRegisterOrAuthenticate(String password) throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        String token = requestToken("/api/v1/auth", user);
+        var userBefore = jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId());
+        UUID resetId = resets.findByTokenHash(hash(token)).orElseThrow().getResetId();
+        var resetBefore = jdbc.queryForMap("SELECT * FROM password_resets WHERE reset_id = ?", resetId);
+        String quoted = vn.edu.hcmut.co3103.identity.support.UnicodeInputs.jsonString(password);
+        String registrationEmail = "unicode-" + UUID.randomUUID() + "@example.com";
+        for (String prefix : new String[]{"/auth", "/api/v1/auth"}) {
+            assertValidation(post(prefix + "/reset-password", "{\"token\":\"" + token + "\",\"new_password\":"
+                    + quoted + "}"), "PASSWORD_POLICY_VIOLATION", "new_password");
+            assertValidation(post(prefix + "/login", "{\"email\":\"" + user.getEmail() + "\",\"password\":"
+                    + quoted + "}"), "VALIDATION_ERROR", "password");
+            assertValidation(post(prefix + "/register", "{\"email\":\"" + registrationEmail
+                    + "\",\"full_name\":\"Unicode Test\",\"password\":" + quoted + "}"), "VALIDATION_ERROR", "password");
+            assertValidation(post(prefix + "/register", "{\"email\":\"" + registrationEmail
+                    + "\",\"password\":\"ValidPassword123!\",\"full_name\":" + quoted + "}"), "VALIDATION_ERROR", "full_name");
+        }
+        assertThat(users.findByEmail(registrationEmail)).isEmpty();
+        assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(userBefore);
+        assertThat(jdbc.queryForMap("SELECT * FROM password_resets WHERE reset_id = ?", resetId)).isEqualTo(resetBefore);
+        assertThat(encoder.matches(OLD_PASSWORD, users.findById(user.getUserId()).orElseThrow().getPasswordHash())).isTrue();
+        assertThat(post("/api/v1/auth/login", loginBody(user, password.replaceAll("[\\uD800-\\uDFFF]", "?")))
+                .statusCode()).isEqualTo(401);
+        // The rejected request did not consume the token; a valid supplementary password still works.
+        String valid = "MậtKhẩu😀123!";
+        assertThat(post("/api/v1/auth/reset-password", resetBody(token, valid)).statusCode()).isEqualTo(200);
+        assertThat(post("/api/v1/auth/login", loginBody(user, valid)).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void questionMarkPasswordDoesNotAuthenticateEitherSurrogateVariant() throws Exception {
+        User user = createUser(UserStatus.ACTIVE);
+        String token = requestToken("/api/v1/auth", user);
+        assertThat(post("/api/v1/auth/reset-password", resetBody(token, "????????")).statusCode()).isEqualTo(200);
+        var before = jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId());
+        for (String malformed : new String[]{"\\ud800".repeat(8), "\\udfff".repeat(8)}) {
+            assertValidation(post("/api/v1/auth/login", loginBody(user, malformed)), "VALIDATION_ERROR", "password");
+            assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(before);
+        }
+        assertThat(post("/api/v1/auth/login", loginBody(user, "????????")).statusCode()).isEqualTo(200);
+    }
+
     private void assertValidation(HttpResponse<String> response, String code, String field) {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
         var error = mapper.readTree(response.body());

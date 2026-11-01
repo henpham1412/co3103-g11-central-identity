@@ -217,7 +217,7 @@ class CurrentUserHttpIntegrationTest {
                 Stream.concat(
                         Stream.of("bio", "full_name", "phone_number", "locale", "timezone")
                                 .map(field -> Arguments.of(path, field, "bad\0value")),
-                        Stream.of("1899-12-31", "0000-01-01", "-5000-01-01", "-999999998-01-01",
+                        Stream.of("1899-12-31", "0000-01-01",
                                         LocalDate.now().plusDays(1).toString())
                                 .map(date -> Arguments.of(path, "date_of_birth", date))));
     }
@@ -254,7 +254,7 @@ class CurrentUserHttpIntegrationTest {
         User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
                 .passwordHash("unused-test-hash").build());
         String token = jwtService.generateToken(user);
-        for (String date : new String[]{"1900-01-01", LocalDate.now().toString()}) {
+        for (String date : new String[]{"1900-01-01", "2000-02-29", LocalDate.now().toString()}) {
             var response = patch(path, "{\"date_of_birth\":\"" + date + "\"}", token);
             assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
             assertThat(userProfileRepository.findById(user.getUserId()).orElseThrow().getDateOfBirth())
@@ -277,6 +277,72 @@ class CurrentUserHttpIntegrationTest {
                     (row, index) -> row.getTimestamp(1).toInstant(), user.getUserId());
             assertThat(returned).as("timestamp for PATCH %s", body).isEqualTo(persisted);
         }
+    }
+
+    static Stream<Arguments> malformedProfileUnicode() {
+        return Stream.of("full_name", "bio", "avatar_url", "phone_number", "locale", "timezone")
+                .flatMap(field -> vn.edu.hcmut.co3103.identity.support.UnicodeInputs.malformedUnicode()
+                        .map(value -> Arguments.of(field, value)));
+    }
+
+    @ParameterizedTest
+    @MethodSource("malformedProfileUnicode")
+    void malformedUnicodeNeverMutatesProfileOrTimestamps(String field, String value) throws Exception {
+        String text = field.equals("avatar_url") ? "https://example.com/" + value : value;
+        assertRejectedPatchPreservesRows("{\"" + field + "\":"
+                + vn.edu.hcmut.co3103.identity.support.UnicodeInputs.jsonString(text) + "}",
+                "VALIDATION_ERROR", field);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"\"\"", "\"   \"", "\"\\t\\n\"", "[]", "[2000,1,2]", "[\"2000-01-02\"]",
+            "{}", "{\"year\":2000}", "0", "946771200000", "1.5", "true", "false", "\"[]\"",
+            "\"2000-01-02T00:00:00\"", "\"2000-01-02T00:00:00Z\"", "\"2000-01-02T12:34:56+07:00\"",
+            "\"2000-01-02 00:00:00\"", "\" 2000-01-02\"", "\"2000-01-02 \"", "\"2000-1-2\"",
+            "\"2001-02-29\"", "\"2000-02-30\"", "\"2000-13-01\"", "\"-5000-01-01\"", "\"-999999998-01-01\""})
+    void invalidBirthDateShapesNeverMutateProfileOrTimestamps(String value) throws Exception {
+        assertRejectedPatchPreservesRows("{\"full_name\":\"Must not persist\",\"bio\":\"Must not persist\","
+                + "\"date_of_birth\":" + value + "}", "INVALID_REQUEST", null);
+    }
+
+    private void assertRejectedPatchPreservesRows(String body, String code, String field) throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
+                .passwordHash("unused-test-hash").build());
+        String token = jwtService.generateToken(user);
+        assertThat(patch(PATH, """
+                {"bio":"Original bio","date_of_birth":"2000-01-02","phone_number":"123",
+                 "avatar_url":"https://example.com/avatar.png","locale":"vi","timezone":"UTC"}
+                """, token).statusCode()).isEqualTo(200);
+        var userBefore = jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId());
+        var profileBefore = jdbc.queryForMap("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId());
+        for (String path : new String[]{"/users/me", PATH}) {
+            var response = patch(path, body, token);
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+            var error = objectMapper.readTree(response.body());
+            assertThat(error.get("code").asText()).isEqualTo(code);
+            assertThat(error.get("status").asInt()).isEqualTo(400);
+            assertThat(error.get("error").asText()).isEqualTo("Bad Request");
+            assertThat(error.get("path").asText()).isEqualTo(path);
+            assertThat(error.get("timestamp").asText()).isNotBlank();
+            if (field != null) assertThat(error.get("validation_errors").has(field)).isTrue();
+            assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(userBefore);
+            assertThat(jdbc.queryForMap("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId())).isEqualTo(profileBefore);
+        }
+    }
+
+    @Test
+    void supplementaryUnicodeRoundTripsAllProfileText() throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
+                .passwordHash("unused-test-hash").build());
+        String token = jwtService.generateToken(user);
+        var fields = new HashMap<String, String>();
+        for (String field : new String[]{"full_name", "bio", "avatar_url", "phone_number", "locale", "timezone"}) {
+            fields.put(field, field.equals("avatar_url") ? "https://example.com/😀" : "Nguyễn 😀");
+        }
+        assertThat(patch(PATH, objectMapper.writeValueAsString(fields), token).statusCode()).isEqualTo(200);
+        var actual = objectMapper.readTree(send(PATH, null, token).body());
+        fields.forEach((field, value) -> assertThat((field.equals("full_name") ? actual : actual.get("profile"))
+                .get(field).asText()).isEqualTo(value));
     }
 
     private void assertProfileRoutesMatch(String token, JsonNode expected) throws Exception {

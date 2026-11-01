@@ -12,8 +12,8 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @Constraint(validatedBy = Utf8ByteLengthValidator.class)
 public @interface Utf8ByteLength {
-    String message() default "Value exceeds the maximum UTF-8 byte length";
+    String message() default "Value must be valid Unicode within the maximum UTF-8 byte length";
     Class<?>[] groups() default {};
     Class<? extends Payload>[] payload() default {};
-    int max();
+    int max() default Integer.MAX_VALUE;
 }

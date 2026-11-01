@@ -53,6 +53,31 @@ class ProfileRecoveryDtoTest {
         factory.close();
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedUnicode")
+    void rejectsMalformedUnicodeForEveryCredentialDto(String password) {
+        assertThat(validator.validate(new ResetPasswordRequest("token", password)))
+                .extracting(violation -> violation.getPropertyPath().toString()).containsExactly("newPassword");
+        assertThat(validator.validate(new vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest(
+                "student@example.com", password, null, null)))
+                .extracting(violation -> violation.getPropertyPath().toString()).containsExactly("password");
+        assertThat(validator.validate(new vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest(
+                "student@example.com", password, "Student", null)))
+                .extracting(violation -> violation.getPropertyPath().toString()).containsExactly("password");
+        assertThat(validator.validate(new vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest(
+                "student@example.com", "ValidPassword123!", password, null)))
+                .extracting(violation -> violation.getPropertyPath().toString()).containsExactly("fullName");
+    }
+
+    @Test
+    void acceptsSupplementaryPasswordsAtTheBcryptByteLimit() {
+        var request = new ResetPasswordRequest("token", "😀".repeat(18));
+        assertThat(validator.validate(request)).isEmpty();
+        request.setNewPassword("😀".repeat(18) + "a");
+        assertThat(validator.validate(request)).extracting(violation -> violation.getPropertyPath().toString())
+                .containsExactly("newPassword");
+    }
+
     @Test
     void readsRecoveryRequestsWithDocumentedKeysAndNormalizesEmail() {
         var forgot = mapper.readValue("""

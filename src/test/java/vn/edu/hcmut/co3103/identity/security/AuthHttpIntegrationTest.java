@@ -368,7 +368,7 @@ class AuthHttpIntegrationTest {
         JsonNode error = assertError(send("POST", REGISTER_PATH, registerBody(email, atLimit + "a"),
                 "application/json", null), 400, REGISTER_PATH);
         assertThat(error.get("validation_errors").get("password").asText())
-                .isEqualTo("Password must not exceed 72 UTF-8 bytes");
+                .isEqualTo("Password must be valid Unicode and not exceed 72 UTF-8 bytes");
         assertThat(countUsers(email)).isZero();
 
         assertThat(send("POST", REGISTER_PATH, registerBody(email, atLimit), "application/json", null).statusCode())
@@ -387,7 +387,7 @@ class AuthHttpIntegrationTest {
         JsonNode loginError = assertError(send("POST", LOGIN_PATH, loginBody(email, overLimit),
                 "application/json", null), 400, LOGIN_PATH);
         assertThat(loginError.get("validation_errors").get("password").asText())
-                .isEqualTo("Password must not exceed 72 bytes");
+                .isEqualTo("Password must be valid Unicode and not exceed 72 UTF-8 bytes");
         User persisted = userRepository.findByEmail(email).orElseThrow();
         assertThat(persisted.getFailedLoginAttempts()).isZero();
         assertThat(persisted.getLockedUntil()).isNull();

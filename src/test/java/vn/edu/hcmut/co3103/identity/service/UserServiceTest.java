@@ -1,5 +1,13 @@
 package vn.edu.hcmut.co3103.identity.service;
 
+import jakarta.validation.Validation;
+import jakarta.validation.ValidatorFactory;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,6 +36,18 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class UserServiceTest {
 
+    private static ValidatorFactory validatorFactory;
+
+    @BeforeAll
+    static void createValidator() {
+        validatorFactory = Validation.buildDefaultValidatorFactory();
+    }
+
+    @AfterAll
+    static void closeValidator() {
+        validatorFactory.close();
+    }
+
     @Mock
     private UserRepository userRepository;
 
@@ -40,7 +60,7 @@ class UserServiceTest {
 
     @BeforeEach
     void setUp() {
-        userService = new UserService(userRepository, userProfileRepository);
+        userService = new UserService(userRepository, userProfileRepository, validatorFactory.getValidator());
         userId = UUID.randomUUID();
         user = User.builder()
                 .userId(userId)
@@ -48,6 +68,26 @@ class UserServiceTest {
                 .fullName("Nguyen Van A")
                 .status(UserStatus.ACTIVE)
                 .build();
+    }
+
+    @ParameterizedTest
+    @MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedUnicode")
+    void directProfileCallsRejectMalformedUnicodeBeforeAnyMutation(String value) {
+        for (String field : new String[]{"full_name", "bio", "avatar_url", "phone_number", "locale", "timezone"}) {
+            String text = field.equals("avatar_url") ? "https://example.com/" + value : value;
+            var request = JsonMapper.builder().build().readValue("{\"" + field + "\":"
+                    + vn.edu.hcmut.co3103.identity.support.UnicodeInputs.jsonString(text) + "}", UpdateProfileRequest.class);
+            assertThatThrownBy(() -> userService.updateProfile(userId, request)).isInstanceOf(IllegalArgumentException.class);
+        }
+        verifyNoInteractions(userRepository, userProfileRepository);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"1899-12-31", "0000-01-01", "9999-12-31"})
+    void directProfileCallsEnforceBirthDateRange(String date) {
+        var request = UpdateProfileRequest.builder().fullName("Must not persist").dateOfBirth(LocalDate.parse(date)).build();
+        assertThatThrownBy(() -> userService.updateProfile(userId, request)).isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(userRepository, userProfileRepository);
     }
 
     @Test

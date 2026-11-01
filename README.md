@@ -12,14 +12,14 @@ It provides a common user identity across authorized LMS instances. Each LMS ins
 | Framework | Spring Boot 4.1.1 |
 | Build Tool | Apache Maven 3.9.12 via Maven Wrapper |
 | Maven Wrapper | 3.3.4 (`only-script`) |
-| Database | PostgreSQL |
+| Database | PostgreSQL 18.6 |
 | Persistence | Spring Data JPA |
 | Security | Spring Security and OAuth2 Resource Server |
 | Validation | Spring Boot Validation |
 
 Spring Boot manages compatible dependency versions through its dependency management. Do not add explicit versions to individual Spring Boot-managed dependencies unless required and reviewed by the team.
 
-The PostgreSQL major version and local connection configuration will be standardized as part of the development setup.
+The agreed PostgreSQL baseline is **18.6**, as specified in DOC-07 §3.1–§3.3. Use this version for local development and integration tests.
 
 ## 2. Responsibilities
 
@@ -59,7 +59,7 @@ Install the following software:
 
 - **JDK 25** — Required to compile and run the application.
 - **Git** — Required to clone and update the repository.
-- **PostgreSQL** — Required when running the application with database connectivity enabled.
+- **PostgreSQL 18.6** — Required for local development, database connectivity, and integration tests.
 
 A separate global Maven installation is not required. The repository includes Maven Wrapper scripts that download and use the configured Maven version.
 

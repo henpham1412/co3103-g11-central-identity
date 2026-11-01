@@ -185,6 +185,14 @@ class PasswordResetServiceTest {
         verifyNoInteractions(users, resets, encoder);
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedUnicode")
+    void serviceRejectsMalformedUnicodeBeforeHashingOrTokenConsumption(String password) {
+        assertThatThrownBy(() -> service.resetPassword(new ResetPasswordRequest("raw-token", password)))
+                .isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(users, resets, encoder);
+    }
+
     private PasswordReset validReset() {
         return PasswordReset.builder().userId(user.getUserId()).expiresAt(Instant.now().plusSeconds(900)).build();
     }

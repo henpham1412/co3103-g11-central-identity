@@ -24,6 +24,6 @@ public class ResetPasswordRequest {
     @JsonProperty("new_password")
     @NotBlank(message = "Password is required")
     @Size(min = 8, max = 128, message = "Password must be between 8 and 128 characters")
-    @Utf8ByteLength(max = 72, message = "Password must not exceed 72 bytes")
+    @Utf8ByteLength(max = 72, message = "Password must be valid Unicode and not exceed 72 UTF-8 bytes")
     private String newPassword;
 }

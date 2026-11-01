@@ -24,9 +24,9 @@ import vn.edu.hcmut.co3103.identity.exception.InvalidRedirectUriException;
 import vn.edu.hcmut.co3103.identity.repository.LmsClientRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLengthValidator;
 
 import java.time.Instant;
-import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 @Service
@@ -49,8 +49,11 @@ public class AuthService {
     public RegisterResponse register(RegisterRequest request) {
         String password = request.getPassword();
         if (password == null || password.isBlank() || password.length() < 8
-                || password.getBytes(StandardCharsets.UTF_8).length > 72) {
+                || !Utf8ByteLengthValidator.isValid(password, 72)) {
             throw new IllegalArgumentException("Password does not meet the password policy");
+        }
+        if (!Utf8ByteLengthValidator.isValid(request.getFullName(), Integer.MAX_VALUE)) {
+            throw new IllegalArgumentException("Full name must be valid Unicode");
         }
         String email = request.getEmail().trim().toLowerCase(Locale.ROOT);
         if (userRepository.existsByEmail(email)) {
@@ -87,7 +90,7 @@ public class AuthService {
             noRollbackFor = {InvalidCredentialsException.class, AccountLockedException.class})
     public AuthResponse login(LoginRequest request) {
         // Also protect callers that bypass HTTP bean validation, before any BCrypt work.
-        if (request.getPassword() != null && request.getPassword().getBytes(StandardCharsets.UTF_8).length > 72) {
+        if (!Utf8ByteLengthValidator.isValid(request.getPassword(), 72)) {
             throw new InvalidCredentialsException("Invalid email or password");
         }
         String clientId = validateClientContext(request);

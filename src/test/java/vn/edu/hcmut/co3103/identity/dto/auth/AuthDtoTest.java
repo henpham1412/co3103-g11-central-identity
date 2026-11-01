@@ -71,7 +71,7 @@ class AuthDtoTest {
         assertEquals(1, violations.size());
         var violation = violations.iterator().next();
         assertEquals("password", violation.getPropertyPath().toString());
-        assertEquals("Password must not exceed 72 UTF-8 bytes", violation.getMessage());
+        assertEquals("Password must be valid Unicode and not exceed 72 UTF-8 bytes", violation.getMessage());
     }
 
     @Test
@@ -117,7 +117,7 @@ class AuthDtoTest {
         var resetViolation = resetViolations.iterator().next();
         assertEquals("password", loginViolation.getPropertyPath().toString());
         assertEquals("newPassword", resetViolation.getPropertyPath().toString());
-        assertEquals("Password must not exceed 72 bytes", loginViolation.getMessage());
-        assertEquals("Password must not exceed 72 bytes", resetViolation.getMessage());
+        assertEquals("Password must be valid Unicode and not exceed 72 UTF-8 bytes", loginViolation.getMessage());
+        assertEquals("Password must be valid Unicode and not exceed 72 UTF-8 bytes", resetViolation.getMessage());
     }
 }

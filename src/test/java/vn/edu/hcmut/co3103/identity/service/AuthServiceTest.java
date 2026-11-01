@@ -120,6 +120,19 @@ class AuthServiceTest {
         loginRequest = LoginRequest.builder().email(EMAIL).password(PASSWORD).build();
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedUnicode")
+    void directCredentialCallsRejectMalformedUnicodeBeforeEncodingOrLookup(String password) {
+        registerRequest.setPassword(password);
+        loginRequest.setPassword(password);
+        assertThrows(IllegalArgumentException.class, () -> authService.register(registerRequest));
+        assertThrows(InvalidCredentialsException.class, () -> authService.login(loginRequest));
+        registerRequest.setPassword(PASSWORD);
+        registerRequest.setFullName(password);
+        assertThrows(IllegalArgumentException.class, () -> authService.register(registerRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, jwtService, lmsClientRepository);
+    }
+
     @Test
     void registerSuccess() {
         stubRegistration();

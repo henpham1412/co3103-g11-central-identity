@@ -260,7 +260,7 @@ class AuthControllerTest {
         int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         String password = character.repeat(72 / bytesPerCharacter) + "b";
         expectError(LOGIN_PATH, LOGIN_JSON.replace(PASSWORD, password), 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors.password").value("Password must not exceed 72 bytes"))
+                .andExpect(jsonPath("$.validation_errors.password").value("Password must be valid Unicode and not exceed 72 UTF-8 bytes"))
                 .andExpect(jsonPath("$.access_token").doesNotExist())
                 .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService, userRepository);
@@ -300,7 +300,7 @@ class AuthControllerTest {
         String password = character.repeat(repetitions);
         String requestBody = REGISTER_JSON.replace(PASSWORD, password);
         expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
-                .andExpect(jsonPath("$.validation_errors.password").value("Password must not exceed 72 UTF-8 bytes"))
+                .andExpect(jsonPath("$.validation_errors.password").value("Password must be valid Unicode and not exceed 72 UTF-8 bytes"))
                 .andExpect(content().string(not(containsString(password))));
         verifyNoInteractions(authService, userRepository);
     }
