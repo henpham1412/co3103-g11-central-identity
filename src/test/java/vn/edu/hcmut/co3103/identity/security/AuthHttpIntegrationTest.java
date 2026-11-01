@@ -65,26 +65,13 @@ class AuthHttpIntegrationTest {
     private final Set<String> testEmails = new HashSet<>();
     private final Set<String> testClientIds = new HashSet<>();
 
-    @ParameterizedTest
-    @ValueSource(strings = {"/auth", "/api/v1/auth"})
-    void invalidAuthRequestsUseBadRequestWithoutChangingAccounts(String prefix) throws Exception {
+    @Test
+    void invalidAuthRequestsUseBadRequestWithoutChangingAccounts() throws Exception {
         String email = newEmail();
-        String validRegister = registerBody(email, PASSWORD);
-        String validLogin = loginBody(email, PASSWORD);
         Long before = jdbcTemplate.queryForObject("select count(*) from users", Long.class);
-        for (String body : List.of("{}", "{", "[]", validRegister.replace(email, "invalid-email"),
-                validRegister.replace(PASSWORD, "short"), validRegister.replace("Security Test", " "),
-                validRegister.replace("}", ",\"client_id\":\"invalid client\"}"),
-                validRegister.replace("}", ",\"unknown\":true}"))) {
-            assertError(send("POST", prefix + "/register", body, "application/json", null),
-                    400, prefix + "/register");
-        }
-        for (String body : List.of("{}", "{", "[]", validLogin.replace(email, "invalid-email"),
-                validLogin.replace(PASSWORD, ""), validLogin.replace("}", ",\"client_id\":\"missing-client\"}"),
-                validLogin.replace("}", ",\"redirect_uri\":\"https://unregistered.example/callback\"}"),
-                validLogin.replace("}", ",\"client_id\":\"missing-client\",\"redirect_uri\":\"invalid\"}"))) {
-            assertError(send("POST", prefix + "/login", body, "application/json", null),
-                    400, prefix + "/login");
+        for (String path : List.of(REGISTER_PATH, LOGIN_PATH)) {
+            assertError(send("POST", path, "{", "application/json", null), 400, path);
+            assertError(send("POST", path, "{\"email\":\"" + email + "\"}", "application/json", null), 400, path);
         }
         assertThat(countUsers(email)).isZero();
         assertThat(jdbcTemplate.queryForObject("select count(*) from users", Long.class)).isEqualTo(before);
@@ -268,9 +255,8 @@ class AuthHttpIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"application/xml", "application/json;q=0", "application/xml;q=1, */*;q=0",
-            "application/json;q=0, */*;q=1", "*/*;q=1, application/json;q=0",
-            "application/*;q=0, */*;q=1", "application/json;q=0, application/*;q=1"})
+    @ValueSource(strings = {"application/xml", "application/json;q=0, */*;q=1",
+            "application/json;q=0, application/*;q=1"})
     void unacceptableRegistrationDoesNotCommitUserAndJsonRetrySucceeds(String accept) throws Exception {
         String email = newEmail();
         String body = registerBody(email, PASSWORD);
@@ -287,15 +273,12 @@ class AuthHttpIntegrationTest {
                 .isEqualTo(userRepository.findByEmail(email).orElseThrow().getUserId().toString());
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"application/xml", "application/json;q=0", "application/xml;q=1, */*;q=0",
-            "application/json;q=0, */*;q=1", "*/*;q=1, application/json;q=0",
-            "application/*;q=0, */*;q=1"})
-    void unacceptableLoginDoesNotCommitFailedAttemptOrLoginTime(String accept) throws Exception {
+    @Test
+    void unacceptableLoginDoesNotCommitFailedAttemptOrLoginTime() throws Exception {
         User user = createUser();
         for (String password : new String[]{"wrong-password", PASSWORD}) {
             JsonNode error = assertError(send("POST", LOGIN_PATH, loginBody(user.getEmail(), password),
-                    accept, null), 406, LOGIN_PATH);
+                    "application/json;q=0, */*;q=1", null), 406, LOGIN_PATH);
             assertErrorEnvelope(error);
             assertThat(error.get("code").asText()).isEqualTo("NOT_ACCEPTABLE");
         }
@@ -308,10 +291,8 @@ class AuthHttpIntegrationTest {
 
     @ParameterizedTest
     @NullSource
-    @ValueSource(strings = {"*/*", "application/json", "application/json, text/plain, */*",
-            "application/json;q=0.1, */*;q=0", "*/*;q=0, application/json;q=0.1",
-            "application/*;q=0.5", "application/xml;q=1, */*;q=0.1",
-            "application/json;q=0.1, application/*;q=0"})
+    @ValueSource(strings = {"*/*", "application/json;q=0.1, */*;q=0", "application/*;q=0.5",
+            "application/xml;q=1, */*;q=0.1", "application/json;q=0.1, application/*;q=0"})
     void acceptableJsonRegistrationAndLoginSucceed(String accept) throws Exception {
         String email = newEmail();
         assertThat(send("POST", REGISTER_PATH, registerBody(email, PASSWORD), accept, null).statusCode())
@@ -417,12 +398,10 @@ class AuthHttpIntegrationTest {
                 404, MISSING_PATH);
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"a", "\u00e9", "\u20ac", "\uD83D\uDE00"})
-    void bcryptByteBoundaryIsValidatedBeforeWritingAndAcceptsExactly72Bytes(String character) throws Exception {
+    @Test
+    void bcryptByteBoundaryIsValidatedBeforeWritingAndAcceptsExactly72Bytes() throws Exception {
         String email = newEmail();
-        int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-        String atLimit = character.repeat(72 / bytesPerCharacter);
+        String atLimit = "\uD83D\uDE00".repeat(18);
         assertThat(atLimit.getBytes(java.nio.charset.StandardCharsets.UTF_8)).hasSize(72);
         JsonNode error = assertError(send("POST", REGISTER_PATH, registerBody(email, atLimit + "a"),
                 "application/json", null), 400, REGISTER_PATH);

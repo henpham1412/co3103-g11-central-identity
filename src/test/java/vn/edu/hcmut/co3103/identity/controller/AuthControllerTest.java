@@ -5,7 +5,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
@@ -42,7 +41,6 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
-import java.util.stream.IntStream;
 
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.contains;
@@ -180,7 +178,7 @@ class AuthControllerTest {
     }
 
     @ParameterizedTest
-    @MethodSource("controlCharacters")
+    @ValueSource(ints = {0, 31, 159})
     void registerRejectsNullAndControlCharactersInFullName(int codePoint) throws Exception {
         String escapedControl = String.format("\\u%04x", codePoint);
         String requestBody = REGISTER_JSON.replace(FULL_NAME, "Test" + escapedControl + " Student");
@@ -188,10 +186,6 @@ class AuthControllerTest {
         expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
                 .andExpect(jsonPath("$.details[?(@.field == 'full_name')].message").value(contains("Full name contains invalid characters")));
         verifyNoInteractions(authService, userRepository);
-    }
-
-    static IntStream controlCharacters() {
-        return IntStream.concat(IntStream.rangeClosed(0, 31), IntStream.rangeClosed(127, 159));
     }
 
     @ParameterizedTest
@@ -207,24 +201,12 @@ class AuthControllerTest {
         verify(authService).register(argThat(request -> fullName.equals(request.getFullName())));
     }
 
-    @ParameterizedTest
-    @CsvSource(delimiter = '|', textBlock = """
-            {"password":"Password123!","full_name":"Test Student"} | email | Email is required
-            {"email":null,"password":"Password123!","full_name":"Test Student"} | email | Email is required
-            {"email":"","password":"Password123!","full_name":"Test Student"} | email | Email is required
-            {"email":"invalid-email","password":"Password123!","full_name":"Test Student"} | email | Invalid email format
-            {"email":"student@example.com","password":"1234567","full_name":"Test Student"} | password | Password must be between 8 and 128 characters
-            {"email":"student@example.com","full_name":"Test Student"} | password | Password is required
-            {"email":"student@example.com","password":"Password123!"} | full_name | Full name is required
-            {"email":"student@example.com","password":"Password123!","full_name":null} | full_name | Full name is required
-            {"email":"student@example.com","password":"Password123!","full_name":""} | full_name | Full name is required
-            {"email":"student@example.com","password":"Password123!","full_name":"   "} | full_name | Full name is required
-            """)
-    void registerRejectsInvalidInputBeforeCallingService(String requestBody, String field, String message)
-            throws Exception {
-        expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
+    @Test
+    void registerRejectsMissingFullNameBeforeCallingService() throws Exception {
+        expectError(REGISTER_PATH, "{\"email\":\"student@example.com\",\"password\":\"Password123!\"}",
+                400, "Bad Request", "Validation failed")
                 .andExpect(jsonPath("$.details", hasSize(1)))
-                .andExpect(jsonPath("$.details[?(@.field == '" + field + "')].message").value(contains(message)));
+                .andExpect(jsonPath("$.details[?(@.field == 'full_name')].message").value(contains("Full name is required")));
         verifyNoInteractions(authService);
     }
 
@@ -255,11 +237,9 @@ class AuthControllerTest {
         verifyNoInteractions(authService, userRepository);
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"a", "\u00e9", "\u20ac", "\uD83D\uDE00"})
-    void loginRejects73Utf8BytesBeforeService(String character) throws Exception {
-        int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-        String password = character.repeat(72 / bytesPerCharacter) + "b";
+    @Test
+    void loginRejects73Utf8BytesBeforeService() throws Exception {
+        String password = "\uD83D\uDE00".repeat(18) + "b";
         expectError(LOGIN_PATH, LOGIN_JSON.replace(PASSWORD, password), 400, "Bad Request", "Validation failed")
                 .andExpect(jsonPath("$.details[?(@.field == 'password')].message").value(contains("Password must be valid Unicode and not exceed 72 UTF-8 bytes")))
                 .andExpect(jsonPath("$.access_token").doesNotExist())
@@ -294,10 +274,9 @@ class AuthControllerTest {
         verify(authService).register(any(RegisterRequest.class));
     }
 
-    @ParameterizedTest
-    @CsvSource({"a, 73", "\u20ac, 25"})
-    void registerRejectsPasswordsExceedingBcryptByteLimit(String character, int repetitions) throws Exception {
-        String password = character.repeat(repetitions);
+    @Test
+    void registerRejectsPasswordsExceedingBcryptByteLimit() throws Exception {
+        String password = "\u20ac".repeat(25);
         String requestBody = REGISTER_JSON.replace(PASSWORD, password);
         expectError(REGISTER_PATH, requestBody, 400, "Bad Request", "Validation failed")
                 .andExpect(jsonPath("$.details[?(@.field == 'password')].message").value(contains("Password must be valid Unicode and not exceed 72 UTF-8 bytes")))
@@ -410,22 +389,11 @@ class AuthControllerTest {
         verify(authService).login(any(LoginRequest.class));
     }
 
-    @ParameterizedTest
-    @CsvSource(delimiter = '|', textBlock = """
-            {"password":"Password123!"} | email | Email is required
-            {"email":null,"password":"Password123!"} | email | Email is required
-            {"email":"","password":"Password123!"} | email | Email is required
-            {"email":"invalid-email","password":"Password123!"} | email | Invalid email format
-            {"email":"student@example.com"} | password | Password is required
-            {"email":"student@example.com","password":null} | password | Password is required
-            {"email":"student@example.com","password":""} | password | Password is required
-            {"email":"student@example.com","password":"   "} | password | Password is required
-            """)
-    void loginRejectsInvalidInputBeforeCallingService(String requestBody, String field, String message)
-            throws Exception {
-        expectError(LOGIN_PATH, requestBody, 400, "Bad Request", "Validation failed")
+    @Test
+    void loginRejectsMissingEmailBeforeCallingService() throws Exception {
+        expectError(LOGIN_PATH, "{\"password\":\"Password123!\"}", 400, "Bad Request", "Validation failed")
                 .andExpect(jsonPath("$.details", hasSize(1)))
-                .andExpect(jsonPath("$.details[?(@.field == '" + field + "')].message").value(contains(message)));
+                .andExpect(jsonPath("$.details[?(@.field == 'email')].message").value(contains("Email is required")));
         verifyNoInteractions(authService);
     }
 

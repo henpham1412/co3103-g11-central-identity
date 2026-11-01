@@ -111,13 +111,39 @@ class AuthDtoTest {
     }
 
     @Test
+    void registrationRejectsEveryControlCharacterInFullName() {
+        // Exhaustive character validation belongs here; MVC only checks representative binding failures.
+        java.util.stream.IntStream.concat(java.util.stream.IntStream.rangeClosed(0, 31),
+                java.util.stream.IntStream.rangeClosed(127, 159)).forEach(codePoint -> {
+            var request = new RegisterRequest("student@example.com", "Password123!",
+                    "Test" + (char) codePoint + " Student", null);
+            var violations = validator.validate(request);
+            assertEquals(1, violations.size(), "control character " + codePoint);
+            assertEquals("fullName", violations.iterator().next().getPropertyPath().toString());
+        });
+    }
+
+    @Test
     void rejectsInvalidInputs() {
-        RegisterRequest badRegister = RegisterRequest.builder()
-                .email("not-an-email")
-                .password("short")
-                .fullName("")
-                .build();
-        assertFalse(validator.validate(badRegister).isEmpty());
+        // Keep the field-value matrix at the DTO boundary instead of repeating HTTP requests.
+        for (String email : new String[]{null, "", "   ", "invalid-email"}) {
+            assertFalse(validator.validateProperty(new RegisterRequest(email, "Password123!", "Student", null),
+                    "email").isEmpty());
+            assertFalse(validator.validateProperty(new LoginRequest(email, "Password123!", null, null),
+                    "email").isEmpty());
+        }
+        for (String password : new String[]{null, "", "   "}) {
+            assertFalse(validator.validateProperty(new RegisterRequest("student@example.com", password, "Student", null),
+                    "password").isEmpty());
+            assertFalse(validator.validateProperty(new LoginRequest("student@example.com", password, null, null),
+                    "password").isEmpty());
+        }
+        assertFalse(validator.validateProperty(new RegisterRequest("student@example.com", "short", "Student", null),
+                "password").isEmpty());
+        for (String fullName : new String[]{null, "", "   "}) {
+            assertFalse(validator.validateProperty(new RegisterRequest("student@example.com", "Password123!", fullName, null),
+                    "fullName").isEmpty());
+        }
 
         ForgotPasswordRequest badForgot = ForgotPasswordRequest.builder()
                 .email("")

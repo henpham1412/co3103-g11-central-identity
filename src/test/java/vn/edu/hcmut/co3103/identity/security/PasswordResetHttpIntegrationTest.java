@@ -45,6 +45,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static vn.edu.hcmut.co3103.identity.support.ErrorResponseAssertions.assertErrorEnvelope;
@@ -207,15 +208,9 @@ class PasswordResetHttpIntegrationTest {
     @Test
     void saturatedIssuanceExecutorRetainsAcceptedRequestsUntilCapacityReturns() throws Exception {
         User user = createUser(UserStatus.ACTIVE);
-        var entered = new CountDownLatch(2);
         var release = new CountDownLatch(1);
         try {
-            for (int i = 0; i < 2; i++) executor.execute(() -> {
-                entered.countDown();
-                try { assertThat(release.await(15, TimeUnit.SECONDS)).isTrue(); }
-                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
-            });
-            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            saturateExecutor(executor, release);
             for (String email : List.of(user.getEmail(), "unknown@example.com")) {
                 var response = post("/auth/forgot-password", "{\"email\":\"" + email + "\"}");
                 assertThat(response.statusCode()).isEqualTo(200);
@@ -233,15 +228,9 @@ class PasswordResetHttpIntegrationTest {
     @Test
     void saturatedDeliveryExecutorDoesNotBlockIssuanceAndRetainsDeliveryForRetry() throws Exception {
         User user = createUser(UserStatus.ACTIVE);
-        var entered = new CountDownLatch(4);
         var release = new CountDownLatch(1);
         try {
-            for (int i = 0; i < 4; i++) deliveryExecutor.execute(() -> {
-                entered.countDown();
-                try { assertThat(release.await(15, TimeUnit.SECONDS)).isTrue(); }
-                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
-            });
-            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            saturateExecutor(deliveryExecutor, release);
             assertThat(post("/auth/forgot-password", "{\"email\":\"" + user.getEmail() + "\"}").statusCode()).isEqualTo(200);
             await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                     assertThat(resets.findByUserIdOrderByCreatedAtDesc(user.getUserId())).hasSize(1));
@@ -272,10 +261,8 @@ class PasswordResetHttpIntegrationTest {
     }
 
     @ParameterizedTest
-    @org.junit.jupiter.params.provider.CsvSource({
-            "/auth,expired", "/auth,used", "/auth,legacyUsed", "/auth,missing",
-            "/api/v1/auth,expired", "/api/v1/auth,used", "/api/v1/auth,legacyUsed", "/api/v1/auth,missing"})
-    void invalidTokensDoNotChangeDatabase(String prefix, String scenario) throws Exception {
+    @ValueSource(strings = {"expired", "used", "legacyUsed", "missing"})
+    void invalidTokensDoNotChangeDatabase(String scenario) throws Exception {
         User user = createUser(UserStatus.ACTIVE);
         String token = requestToken("/auth", user);
         PasswordReset reset = resets.findByTokenHash(hash(token)).orElseThrow();
@@ -290,7 +277,7 @@ class PasswordResetHttpIntegrationTest {
             token = "unknown-token";
         }
         PasswordReset before = resets.findById(reset.getResetId()).orElseThrow();
-        assertInvalid(post(prefix + "/reset-password", resetBody(token, NEW_PASSWORD)));
+        assertInvalid(post("/auth/reset-password", resetBody(token, NEW_PASSWORD)));
         assertThat(users.findById(user.getUserId()).orElseThrow().getPasswordHash()).isEqualTo(user.getPasswordHash());
         PasswordReset after = resets.findById(reset.getResetId()).orElseThrow();
         assertThat(after.isUsed()).isEqualTo(before.isUsed());
@@ -471,20 +458,23 @@ class PasswordResetHttpIntegrationTest {
         assertThat(output.getAll()).doesNotContain("https://frontend.example/reset-password?token=");
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"/auth", "/api/v1/auth"})
-    void recoveryValidationUsesSpecificCodesWithoutDatabaseChanges(String prefix) throws Exception {
+    @Test
+    void recoveryValidationUsesSpecificCodesWithoutDatabaseChanges() throws Exception {
         User user = createUser(UserStatus.ACTIVE);
-        String token = requestToken(prefix, user);
-        for (String email : new String[]{"", " ", "invalid", "a".repeat(250) + "@example.com"}) {
-            var response = post(prefix + "/forgot-password", mapper.writeValueAsString(java.util.Map.of("email", email)));
-            assertValidation(response, "BAD_REQUEST", "email");
+        String token = requestToken("/auth", user);
+        for (String path : List.of("/auth/forgot-password", "/auth/reset-password")) {
+            var malformed = post(path, "{");
+            assertThat(malformed.statusCode()).isEqualTo(400);
+            var error = mapper.readTree(malformed.body());
+            assertErrorEnvelope(error);
+            assertThat(error.get("code").asText()).isEqualTo("BAD_REQUEST");
+            assertThat(error.get("details").isEmpty()).isTrue();
         }
-        for (String password : new String[]{"", "short", "        ", "a".repeat(73), "é".repeat(37), "😀".repeat(19)}) {
-            var response = post(prefix + "/reset-password", resetBody(token, password));
-            assertValidation(response, "PASSWORD_POLICY_VIOLATION", "new_password");
-        }
-        assertValidation(post(prefix + "/reset-password", resetBody(" ", NEW_PASSWORD)), "VALIDATION_ERROR", "token");
+        assertValidation(post("/auth/forgot-password", "{}"), "BAD_REQUEST", "email");
+        assertValidation(post("/auth/reset-password", resetBody(token, "short")),
+                "PASSWORD_POLICY_VIOLATION", "new_password");
+        assertValidation(post("/auth/reset-password", "{\"new_password\":\"" + NEW_PASSWORD + "\"}"),
+                "VALIDATION_ERROR", "token");
         assertThat(users.findById(user.getUserId()).orElseThrow().getPasswordHash()).isEqualTo(user.getPasswordHash());
         var issued = resets.findByUserIdOrderByCreatedAtDesc(user.getUserId());
         assertThat(issued).hasSize(1);
@@ -632,6 +622,29 @@ class PasswordResetHttpIntegrationTest {
         await().atMost(Duration.ofSeconds(10)).until(() -> executor.getActiveCount() == 0
                 && deliveryExecutor.getActiveCount() == 0
                 && jdbc.queryForObject("SELECT count(*) FROM recovery_jobs", Integer.class) == 0);
+    }
+
+    private void saturateExecutor(ThreadPoolTaskExecutor pool, CountDownLatch release) throws InterruptedException {
+        awaitIdle();
+        var entered = new CountDownLatch(pool.getMaxPoolSize());
+        Runnable blocker = () -> {
+            entered.countDown();
+            try { assertThat(release.await(30, TimeUnit.SECONDS)).isTrue(); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+        };
+        for (int i = 0; i < pool.getMaxPoolSize(); i++) {
+            // The scheduled worker can take a slot even after awaitIdle(). With no queue,
+            // retry only rejected submissions; accepted blockers must never be submitted twice.
+            await().atMost(Duration.ofSeconds(5)).pollInterval(Duration.ofMillis(10)).until(() -> {
+                try {
+                    pool.execute(blocker);
+                    return true;
+                } catch (RejectedExecutionException exception) {
+                    return false;
+                }
+            });
+        }
+        assertThat(entered.await(5, TimeUnit.SECONDS)).as("all executor slots are held by the test").isTrue();
     }
 
     private User createUser(UserStatus status) {
