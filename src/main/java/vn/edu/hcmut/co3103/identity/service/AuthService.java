@@ -61,7 +61,7 @@ public class AuthService {
         }
         String email = request.getEmail().trim().toLowerCase(Locale.ROOT);
         if (userRepository.existsByEmail(email)) {
-            throw new DuplicateEmailException("Email already exists: " + email);
+            throw new DuplicateEmailException();
         }
 
         User user = User.builder()
@@ -76,7 +76,7 @@ public class AuthService {
             savedUser = userRepository.saveAndFlush(user);
         } catch (DataIntegrityViolationException e) {
             if (DataIntegrityViolationClassifier.isEmailUniqueViolation(e)) {
-                throw new DuplicateEmailException("Email already exists: " + email);
+                throw new DuplicateEmailException();
             }
             throw e;
         }

@@ -49,7 +49,7 @@ public class GlobalExceptionHandler {
             DuplicateEmailException exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(errorResponse(HttpStatus.CONFLICT, exception.getMessage(), request)
+                .body(errorResponse(HttpStatus.CONFLICT, DuplicateEmailException.MESSAGE, request)
                         .code("EMAIL_ALREADY_REGISTERED").build());
     }
 
@@ -60,7 +60,7 @@ public class GlobalExceptionHandler {
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(errorResponse(HttpStatus.CONFLICT,
-                            "Data conflicts with an existing record", request)
+                            DuplicateEmailException.MESSAGE, request)
                             .code("EMAIL_ALREADY_REGISTERED").build());
         }
         if (!DataIntegrityViolationClassifier.isRequestDataViolation(exception)) {

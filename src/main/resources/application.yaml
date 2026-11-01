@@ -19,6 +19,11 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/central_identity_dev}
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD}
+    hikari:
+      data-source-properties:
+        # Omit row values from driver exception messages before Hibernate/JDBC can log them.
+        # Error headers, SQLSTATEs, and constraint names remain available for diagnostics.
+        logServerErrorDetail: "false"
 
   jpa:
     hibernate:

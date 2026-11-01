@@ -75,8 +75,8 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void duplicateEmailReturnsConflict() throws Exception {
-        String message = "Email already exists: student@example.com";
-        when(authService.register(any(RegisterRequest.class))).thenThrow(new DuplicateEmailException(message));
+        String message = "Email already registered";
+        when(authService.register(any(RegisterRequest.class))).thenThrow(new DuplicateEmailException());
 
         expectError(REGISTER_PATH, REGISTER_JSON, 409, "Conflict", message)
                 .andExpect(jsonPath("$.locked_until").doesNotExist())
@@ -88,7 +88,7 @@ class GlobalExceptionHandlerTest {
         when(authService.register(any(RegisterRequest.class))).thenThrow(
                 new DataIntegrityViolationException("duplicate key violates users_email_key; SQL: insert into users"));
 
-        expectError(REGISTER_PATH, REGISTER_JSON, 409, "Conflict", "Data conflicts with an existing record")
+        expectError(REGISTER_PATH, REGISTER_JSON, 409, "Conflict", "Email already registered")
                 .andExpect(jsonPath("$.locked_until").doesNotExist())
                 .andExpect(jsonPath("$.validation_errors").doesNotExist());
     }
@@ -130,7 +130,7 @@ class GlobalExceptionHandlerTest {
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
 
         String message = switch (status) {
-            case 409 -> "Email already exists: student@example.com";
+            case 409 -> "Email already registered";
             case 400 -> "Request violates a data constraint";
             default -> "An unexpected internal error occurred";
         };
@@ -200,7 +200,7 @@ class GlobalExceptionHandlerTest {
                 Arguments.of(new org.springframework.web.server.ResponseStatusException(
                                 org.springframework.http.HttpStatus.UNPROCESSABLE_CONTENT, "Sensitive business details"),
                         422, "Unprocessable Content", "Unprocessable Content"),
-                Arguments.of(new DuplicateEmailException("Email already exists"), 409, "Conflict", "Email already exists"),
+                Arguments.of(new DuplicateEmailException(), 409, "Conflict", "Email already registered"),
                 Arguments.of(new InvalidCredentialsException("Invalid email or password"),
                         401, "Unauthorized", "Invalid email or password"),
                 Arguments.of(new AccountInactiveException("Account is inactive"), 403, "Forbidden", "Account is inactive"),

@@ -179,7 +179,7 @@ class AuthServiceTest {
         DuplicateEmailException exception = assertThrows(DuplicateEmailException.class,
                 () -> authService.register(registerRequest));
 
-        assertEquals("Email already exists: " + EMAIL, exception.getMessage());
+        assertEquals("Email already registered", exception.getMessage());
         verify(userRepository, never()).saveAndFlush(any(User.class));
         verifyNoInteractions(passwordEncoder, jwtService, jwtProperties);
     }
@@ -197,7 +197,7 @@ class AuthServiceTest {
         DuplicateEmailException exception = assertThrows(DuplicateEmailException.class,
                 () -> transactionalService(transactionManager).register(registerRequest));
 
-        assertEquals("Email already exists: " + EMAIL, exception.getMessage());
+        assertEquals("Email already registered", exception.getMessage());
         var order = inOrder(userRepository, transactionManager);
         order.verify(userRepository).existsByEmail(EMAIL);
         order.verify(userRepository).saveAndFlush(any(User.class));
@@ -218,7 +218,7 @@ class AuthServiceTest {
 
         var exception = assertThrows(DuplicateEmailException.class, () -> authService.register(registerRequest));
 
-        assertEquals("Email already exists: " + EMAIL, exception.getMessage());
+        assertEquals("Email already registered", exception.getMessage());
     }
 
     @Test

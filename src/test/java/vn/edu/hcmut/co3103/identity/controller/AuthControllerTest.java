@@ -278,8 +278,8 @@ class AuthControllerTest {
 
     @Test
     void registerReturnsConflictForDuplicateEmail() throws Exception {
-        String message = "Email already exists: " + EMAIL;
-        when(authService.register(any(RegisterRequest.class))).thenThrow(new DuplicateEmailException(message));
+        String message = "Email already registered";
+        when(authService.register(any(RegisterRequest.class))).thenThrow(new DuplicateEmailException());
 
         expectError(REGISTER_PATH, REGISTER_JSON, 409, "Conflict", message);
         verify(authService).register(any(RegisterRequest.class));
@@ -290,7 +290,7 @@ class AuthControllerTest {
         when(authService.register(any(RegisterRequest.class))).thenThrow(
                 new DataIntegrityViolationException("duplicate key violates users_email_key"));
 
-        expectError(REGISTER_PATH, REGISTER_JSON, 409, "Conflict", "Data conflicts with an existing record");
+        expectError(REGISTER_PATH, REGISTER_JSON, 409, "Conflict", "Email already registered");
         verify(authService).register(any(RegisterRequest.class));
     }
 
