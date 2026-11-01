@@ -32,6 +32,8 @@ public class LoginRequest {
 
     @Size(min = 1, max = 100, message = "Client ID must be between 1 and 100 characters")
     @Pattern(regexp = "\\S+", message = "Client ID must not contain whitespace")
+    @Utf8ByteLength(message = "Client ID must be valid Unicode")
+    @Pattern(regexp = "[^\\x00]*", message = "Client ID must not contain null characters")
     @JsonProperty("client_id")
     private String clientId;
 

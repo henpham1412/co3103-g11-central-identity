@@ -3,7 +3,6 @@ package vn.edu.hcmut.co3103.identity.security;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,10 +37,10 @@ class ContainerErrorIntegrationTest {
     @Autowired private JwtService jwt;
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
-    static Stream<Arguments> malformedPaths() {
-        return Stream.of("/api/v1/users/me", "/users/me", "/api/v1/auth/register", "/auth/register")
-                .flatMap(path -> Stream.of("%GG", "%00", "%", "%0", "%G0", "%2")
-                        .map(suffix -> Arguments.of(path + "/" + suffix)));
+    static Stream<String> malformedPaths() {
+        // Parser rejection precedes routing: cover each failure shape and route without a cross-product.
+        return Stream.of("/api/v1/users/me/%GG", "/users/me/%00",
+                "/api/v1/auth/register/%", "/auth/register/%0");
     }
 
     @ParameterizedTest

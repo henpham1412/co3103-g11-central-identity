@@ -84,6 +84,16 @@ class AuthDtoTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"client\ud800", "client\udfff", "client\0"})
+    void loginRejectsMalformedClientIdentifiers(String clientId) {
+        var request = new LoginRequest("student@example.com", "Password123!", clientId,
+                "https://lms.example.com/auth/callback");
+        var violations = validator.validate(request);
+        assertEquals(1, violations.size());
+        assertEquals("clientId", violations.iterator().next().getPropertyPath().toString());
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"a", "\u00e9", "\u20ac", "\uD83D\uDE00"})
     void validatesBcryptLimitInUtf8BytesIncludingMultibyteBoundary(String character) {
         int bytesPerCharacter = character.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;

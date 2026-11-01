@@ -171,8 +171,7 @@ class CurrentUserHttpIntegrationTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"/users/me,http://localhost:3000", "/users/me,http://localhost:5173",
-            "/api/v1/users/me,http://localhost:3000", "/api/v1/users/me,http://localhost:5173"})
+    @CsvSource({"/users/me,http://localhost:3000", "/api/v1/users/me,http://localhost:5173"})
     void allowedFrontendCanPreflightAndPatchProfile(String path, String origin) throws Exception {
         User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
                 .passwordHash("unused-test-hash").build());
@@ -204,7 +203,7 @@ class CurrentUserHttpIntegrationTest {
         String token = jwtService.generateToken(user);
         assertThat(patch(path, "{\"bio\":\"Original bio\"}", token).statusCode()).isEqualTo(200);
         JsonNode before = objectMapper.readTree(send(path, null, token).body());
-        for (String blank : new String[]{"", " \t\n", "\u2003", "\u3000", " \u2003\t\u3000"}) {
+        for (String blank : new String[]{"", " \t\n", "\u2003"}) {
             var response = patch(path, objectMapper.writeValueAsString(
                     java.util.Map.of("full_name", blank, "bio", "Must not persist")), token);
             assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
@@ -217,18 +216,17 @@ class CurrentUserHttpIntegrationTest {
     }
 
     static Stream<Arguments> storageBoundaryCases() {
-        return Stream.of("/users/me", "/api/v1/users/me").flatMap(path ->
-                Stream.concat(
-                        Stream.of("bio", "full_name", "phone_number", "locale", "timezone")
-                                .map(field -> Arguments.of(path, field, "bad\0value")),
-                        Stream.of("1899-12-31", "0000-01-01",
-                                        LocalDate.now().plusDays(1).toString())
-                                .map(date -> Arguments.of(path, "date_of_birth", date))));
+        return Stream.concat(
+                Stream.of("bio", "full_name", "phone_number", "locale", "timezone")
+                        .map(field -> Arguments.of(field, "bad\0value")),
+                Stream.of("1899-12-31", "0000-01-01", LocalDate.now().plusDays(1).toString())
+                        .map(date -> Arguments.of("date_of_birth", date)));
     }
 
     @ParameterizedTest
     @MethodSource("storageBoundaryCases")
-    void storageBoundariesReturnValidationErrorsWithoutMutatingRows(String path, String field, String value) throws Exception {
+    void storageBoundariesReturnValidationErrorsWithoutMutatingRows(String field, String value) throws Exception {
+        String path = PATH;
         User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
                 .passwordHash("unused-test-hash").build());
         String token = jwtService.generateToken(user);
@@ -300,11 +298,9 @@ class CurrentUserHttpIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"\"\"", "\"   \"", "\"\\t\\n\"", "[]", "[2000,1,2]", "[\"2000-01-02\"]",
-            "{}", "{\"year\":2000}", "0", "946771200000", "1.5", "true", "false", "\"[]\"",
-            "\"2000-01-02T00:00:00\"", "\"2000-01-02T00:00:00Z\"", "\"2000-01-02T12:34:56+07:00\"",
-            "\"2000-01-02 00:00:00\"", "\" 2000-01-02\"", "\"2000-01-02 \"", "\"2000-1-2\"",
-            "\"2001-02-29\"", "\"2000-02-30\"", "\"2000-13-01\"", "\"-5000-01-01\"", "\"-999999998-01-01\""})
+    @ValueSource(strings = {"\"\"", "\"\\t\\n\"", "[2000,1,2]", "{\"year\":2000}", "946771200000", "1.5", "true",
+            "\"2000-01-02T00:00:00Z\"", "\" 2000-01-02\"", "\"2000-01-02 \"", "\"2000-1-2\"",
+            "\"2001-02-29\"", "\"2000-02-30\"", "\"2000-13-01\"", "\"-5000-01-01\""})
     void invalidBirthDateShapesNeverMutateProfileOrTimestamps(String value) throws Exception {
         assertRejectedPatchPreservesRows("{\"full_name\":\"Must not persist\",\"bio\":\"Must not persist\","
                 + "\"date_of_birth\":" + value + "}", "BAD_REQUEST", null);

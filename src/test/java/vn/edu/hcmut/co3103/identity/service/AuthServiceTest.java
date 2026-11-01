@@ -358,22 +358,33 @@ class AuthServiceTest {
     }
 
     @Test
-    void loginPassesValidatedClientIdToTokenGeneration() {
+    void loginPassesPersistedClientIdToTokenGenerationAndResponse() {
         loginRequest.setClientId("lms-client");
         loginRequest.setRedirectUri("https://lms.example.com/auth/callback");
         when(lmsClientRepository.findByClientIdAndIsActiveTrue("lms-client"))
-                .thenReturn(Optional.of(LmsClient.builder().clientId("lms-client")
+                .thenReturn(Optional.of(LmsClient.builder().clientId("persisted-client")
                         .redirectUris(List.of("https://lms.example.com/auth/callback")).build()));
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
-        when(jwtService.generateToken(user, "lms-client")).thenReturn(TOKEN);
+        when(jwtService.generateToken(user, "persisted-client")).thenReturn(TOKEN);
         when(jwtProperties.getExpirationMs()).thenReturn(3_600_000L);
 
         AuthResponse response = authService.login(loginRequest);
         assertEquals(TOKEN, response.getAccessToken());
-        assertEquals("lms-client", response.getClientId());
+        assertEquals("persisted-client", response.getClientId());
 
-        verify(jwtService).generateToken(user, "lms-client");
+        verify(jwtService).generateToken(user, "persisted-client");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"client\ud800", "client\udfff", "client\0"})
+    void loginRejectsMalformedClientBeforeAnyRepositoryLookup(String clientId) {
+        loginRequest.setClientId(clientId);
+        loginRequest.setRedirectUri("https://lms.example.com/auth/callback");
+
+        assertThrows(InvalidClientException.class, () -> authService.login(loginRequest));
+
+        verifyNoInteractions(lmsClientRepository, userRepository, passwordEncoder, jwtService, jwtProperties);
     }
 
     @Test

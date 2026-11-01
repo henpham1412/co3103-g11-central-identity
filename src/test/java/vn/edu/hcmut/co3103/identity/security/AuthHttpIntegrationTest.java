@@ -19,6 +19,7 @@ import vn.edu.hcmut.co3103.identity.entity.LmsClient;
 import vn.edu.hcmut.co3103.identity.repository.LmsClientRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
+import vn.edu.hcmut.co3103.identity.support.UnicodeInputs;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -144,10 +145,11 @@ class AuthHttpIntegrationTest {
         assertThat(duplicate.get("code").asText()).isEqualTo("EMAIL_ALREADY_REGISTERED");
     }
 
-    @Test
-    void activeClientIssuesTokenWithValidatedContext() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"?", "\ud83d\ude00"})
+    void activeClientIssuesTokenWithValidatedContext(String suffix) throws Exception {
         User user = createUser();
-        String clientId = createClient(true);
+        String clientId = createClient(true, suffix);
         String fields = ",\"client_id\":\"" + clientId + "\"";
         fields += ",\"redirect_uri\":\"https://lms.example.com/auth/callback\"";
         HttpResponse<String> login = send("POST", LOGIN_PATH,
@@ -159,6 +161,27 @@ class AuthHttpIntegrationTest {
                 claims -> claims.get("clientId", String.class));
         assertThat(claim).isEqualTo(clientId);
         assertThat(userRepository.findById(user.getUserId()).orElseThrow().getLastLoginAt()).isNotNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"\ud800", "\udfff", "\0"})
+    void malformedClientCannotAliasRegisteredQuestionMarkClient(String suffix) throws Exception {
+        User user = createUser();
+        String registeredClientId = createClient(true, "?");
+        String malformedClientId = registeredClientId.substring(0, registeredClientId.length() - 1) + suffix;
+        String body = loginBody(user.getEmail(), PASSWORD).replace("}", ",\"client_id\":"
+                + UnicodeInputs.jsonString(malformedClientId)
+                + ",\"redirect_uri\":\"https://lms.example.com/auth/callback\"}");
+        var before = jdbcTemplate.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId());
+
+        for (String path : new String[]{"/auth/login", LOGIN_PATH}) {
+            JsonNode error = assertError(send("POST", path, body, "application/json", null), 400, path);
+            assertThat(error).isEqualTo(objectMapper.readTree("""
+                    {"code":"BAD_REQUEST","message":"Client is invalid or inactive","details":[]}
+                    """));
+            assertThat(jdbcTemplate.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId()))
+                    .isEqualTo(before);
+        }
     }
 
     @ParameterizedTest
@@ -191,7 +214,11 @@ class AuthHttpIntegrationTest {
     }
 
     private String createClient(boolean active) {
-        String clientId = "pr9-client-" + UUID.randomUUID();
+        return createClient(active, "");
+    }
+
+    private String createClient(boolean active, String suffix) {
+        String clientId = "pr9-client-" + UUID.randomUUID() + suffix;
         testClientIds.add(clientId);
         lmsClientRepository.saveAndFlush(LmsClient.builder().clientId(clientId).clientName("PR9 Test")
                 .isActive(active).redirectUris(List.of("https://lms.example.com/auth/callback")).build());

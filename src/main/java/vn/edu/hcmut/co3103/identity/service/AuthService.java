@@ -159,6 +159,10 @@ public class AuthService {
             }
             return "central-identity";
         }
+        // JDBC replaces lone surrogates with '?'; reject them before resolving the client.
+        if (!Utf8ByteLengthValidator.isValid(clientId, Integer.MAX_VALUE) || clientId.indexOf('\0') >= 0) {
+            throw new InvalidClientException();
+        }
         var client = lmsClientRepository.findByClientIdAndIsActiveTrue(clientId)
                 .orElseThrow(InvalidClientException::new);
         // Compare the complete registered value; do not normalize or accept prefix matches.
@@ -166,6 +170,6 @@ public class AuthService {
                 || !client.getRedirectUris().contains(redirectUri)) {
             throw new InvalidRedirectUriException();
         }
-        return clientId;
+        return client.getClientId();
     }
 }

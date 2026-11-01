@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.List;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
 import vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLengthValidator;
 
 @RestControllerAdvice
 @Slf4j
@@ -137,6 +138,12 @@ public class GlobalExceptionHandler {
                         error.getDefaultMessage()));
         String code = "VALIDATION_ERROR";
         Object target = exception.getBindingResult().getTarget();
+        if (target instanceof LoginRequest login && login.getClientId() != null
+                && (!Utf8ByteLengthValidator.isValid(login.getClientId(), Integer.MAX_VALUE)
+                    || login.getClientId().indexOf('\0') >= 0)) {
+            // Use the same client-context error as direct service calls, without echoing input.
+            return handleInvalidClient(new InvalidClientException(), request);
+        }
         if (target instanceof RegisterRequest || target instanceof LoginRequest) {
             code = "BAD_REQUEST";
         } else if (target instanceof ForgotPasswordRequest && exception.getBindingResult().hasFieldErrors("email")) {
