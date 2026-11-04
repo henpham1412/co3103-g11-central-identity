@@ -13,7 +13,9 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.JdbcType;
 import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.type.descriptor.jdbc.LocalDateJdbcType;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -47,6 +49,8 @@ public class UserProfile {
     private String phoneNumber;
 
     @Column(name = "date_of_birth")
+    // Bind/extract LocalDate directly: java.sql.Date loses the era for ISO year zero.
+    @JdbcType(LocalDateJdbcType.class)
     private LocalDate dateOfBirth;
 
     @Column(name = "locale", length = 20)

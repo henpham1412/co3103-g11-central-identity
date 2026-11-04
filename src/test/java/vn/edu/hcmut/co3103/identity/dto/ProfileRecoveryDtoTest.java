@@ -208,14 +208,13 @@ class ProfileRecoveryDtoTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"1899-12-31", "0000-01-01", "-5000-01-01"})
-    void rejectsBirthDatesBeforeStorageSafeMinimum(String date) {
+    void acceptsPastBirthDatesWithoutAMinimumYear(String date) {
         var request = UpdateProfileRequest.builder().dateOfBirth(LocalDate.parse(date)).build();
-        assertThat(validator.validate(request)).extracting(violation -> violation.getPropertyPath().toString())
-                .containsExactly("dateOfBirth");
+        assertThat(validator.validate(request)).isEmpty();
     }
 
     @Test
-    void acceptsMinimumBirthDate() {
+    void accepts1900AsAnOrdinaryPastDate() {
         assertThat(validator.validate(UpdateProfileRequest.builder()
                 .dateOfBirth(LocalDate.of(1900, 1, 1)).build())).isEmpty();
     }

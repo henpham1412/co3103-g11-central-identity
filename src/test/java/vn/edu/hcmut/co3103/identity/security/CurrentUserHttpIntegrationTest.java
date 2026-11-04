@@ -219,7 +219,7 @@ class CurrentUserHttpIntegrationTest {
         return Stream.concat(
                 Stream.of("bio", "full_name", "phone_number", "locale", "timezone")
                         .map(field -> Arguments.of(field, "bad\0value")),
-                Stream.of("1899-12-31", "0000-01-01", LocalDate.now().plusDays(1).toString())
+                Stream.of(LocalDate.now().plusDays(1).toString())
                         .map(date -> Arguments.of("date_of_birth", date)));
     }
 
@@ -252,16 +252,67 @@ class CurrentUserHttpIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"/users/me", "/api/v1/users/me"})
-    void acceptsBothBirthDateBoundaries(String path) throws Exception {
+    @MethodSource("validPastBirthDates")
+    void acceptsPastBirthDatesAndPreservesOmittedAndNullSemantics(
+            String path, boolean profileExists, String date) throws Exception {
         User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
                 .passwordHash("unused-test-hash").build());
         String token = jwtService.generateToken(user);
-        for (String date : new String[]{"1900-01-01", "2000-02-29", LocalDate.now().toString()}) {
-            var response = patch(path, "{\"date_of_birth\":\"" + date + "\"}", token);
-            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
-            assertThat(userProfileRepository.findById(user.getUserId()).orElseThrow().getDateOfBirth())
-                    .isEqualTo(LocalDate.parse(date));
+        if (profileExists) {
+            assertThat(patch(path, "{\"bio\":\"Original bio\",\"date_of_birth\":\"1999-01-01\"}", token)
+                    .statusCode()).isEqualTo(200);
+        }
+        var response = patch(path, "{\"date_of_birth\":\"" + date + "\"}", token);
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        assertThat(userProfileRepository.findById(user.getUserId()).orElseThrow().getDateOfBirth())
+                .isEqualTo(LocalDate.parse(date));
+        LocalDate storedDate = jdbc.queryForObject("SELECT date_of_birth FROM user_profiles WHERE user_id = ?",
+                (row, index) -> row.getObject(1, LocalDate.class), user.getUserId());
+        assertThat(storedDate)
+                .as("the actual PostgreSQL value must retain the requested year").isEqualTo(LocalDate.parse(date));
+        assertThat(objectMapper.readTree(send(path, null, token).body()).get("profile").get("date_of_birth").asText())
+                .isEqualTo(date);
+
+        assertThat(patch(path, "{\"bio\":\"Updated bio\"}", token).statusCode()).isEqualTo(200);
+        assertThat(userProfileRepository.findById(user.getUserId()).orElseThrow().getDateOfBirth())
+                .as("omitted date_of_birth retains its value").isEqualTo(LocalDate.parse(date));
+        assertThat(patch(path, "{\"date_of_birth\":null}", token).statusCode()).isEqualTo(200);
+        var cleared = userProfileRepository.findById(user.getUserId()).orElseThrow();
+        assertThat(cleared.getDateOfBirth()).isNull();
+        assertThat(cleared.getBio()).isEqualTo("Updated bio");
+        assertThat(userRepository.findById(user.getUserId()).orElseThrow().getFullName()).isEqualTo("Original Name");
+    }
+
+    static Stream<Arguments> validPastBirthDates() {
+        return Stream.of("/users/me", "/api/v1/users/me").flatMap(path ->
+                Stream.of(false, true).flatMap(existing ->
+                        Stream.of("0000-01-01", "1899-12-31", "1900-01-01", "2000-02-29", LocalDate.now().toString())
+                                .map(date -> Arguments.of(path, existing, date))));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"/users/me,false", "/users/me,true", "/api/v1/users/me,false", "/api/v1/users/me,true"})
+    void invalidAndFutureBirthDatesNeverCreateOrModifyProfile(String path, boolean profileExists) throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
+                .passwordHash("unused-test-hash").build());
+        String token = jwtService.generateToken(user);
+        if (profileExists) {
+            assertThat(patch(path, "{\"bio\":\"Original bio\",\"date_of_birth\":\"1899-12-31\"}", token)
+                    .statusCode()).isEqualTo(200);
+        }
+        var userBefore = jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId());
+        var profilesBefore = jdbc.queryForList("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId());
+        for (String date : new String[]{"1900-02-29", LocalDate.now().plusDays(1).toString()}) {
+            var response = patch(path, "{\"full_name\":\"Must not persist\",\"bio\":\"Must not persist\","
+                    + "\"date_of_birth\":\"" + date + "\"}", token);
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+            var error = objectMapper.readTree(response.body());
+            assertErrorEnvelope(error);
+            assertThat(error.get("code").asText())
+                    .isEqualTo(date.equals("1900-02-29") ? "BAD_REQUEST" : "VALIDATION_ERROR");
+            assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId())).isEqualTo(userBefore);
+            assertThat(jdbc.queryForList("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId()))
+                    .as("profile existence, values and updated_at must be unchanged").isEqualTo(profilesBefore);
         }
     }
 

@@ -12,7 +12,7 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @Constraint(validatedBy = BirthDateValidator.class)
 public @interface BirthDate {
-    String message() default "Date of birth must be between 1900-01-01 and today";
+    String message() default "Date of birth must not be in the future";
     Class<?>[] groups() default {};
     Class<? extends Payload>[] payload() default {};
 }

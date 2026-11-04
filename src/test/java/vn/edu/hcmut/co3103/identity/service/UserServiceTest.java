@@ -83,8 +83,8 @@ class UserServiceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"1899-12-31", "0000-01-01", "9999-12-31"})
-    void directProfileCallsEnforceBirthDateRange(String date) {
+    @ValueSource(strings = {"9999-12-31"})
+    void directProfileCallsRejectFutureBirthDatesBeforeAnyMutation(String date) {
         var request = UpdateProfileRequest.builder().fullName("Must not persist").dateOfBirth(LocalDate.parse(date)).build();
         assertThatThrownBy(() -> userService.updateProfile(userId, request)).isInstanceOf(IllegalArgumentException.class);
         verifyNoInteractions(userRepository, userProfileRepository);

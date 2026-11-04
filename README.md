@@ -303,8 +303,13 @@ explicit `full_name: null` is rejected. Empty PATCH requests (`{}`) are also rej
 Both return HTTP 400 / `VALIDATION_ERROR` before profile writes, leaving account/profile values
 and timestamps unchanged and not creating a missing profile row (DOC-05 section 2.8).
 The returned `updated_at` is the flushed profile timestamp and exactly matches the stored value.
-Stored profile text rejects U+0000. `date_of_birth` must be between `1900-01-01` and today,
-inclusive. These field constraints return HTTP 400 / `VALIDATION_ERROR` with field details.
+Stored profile text rejects U+0000. `date_of_birth` must be a valid calendar date that is not
+in the future; there is no minimum date or year (DOC-05 section 2.8). Future dates return
+HTTP 400 / `VALIDATION_ERROR` with field details. Malformed or impossible calendar dates
+are rejected with HTTP 400 by strict date deserialization. Omitting `date_of_birth` preserves
+its stored value, while explicit `null` clears it.
+The date-of-birth mapping uses JDBC `LocalDate` directly to preserve ISO year `0000`
+when storing and retrieving the value, without changing the PostgreSQL `DATE` column.
 
 Password recovery is available at `POST /auth/forgot-password` and `POST /auth/reset-password`,
 including their `/api/v1/auth` aliases. Both routes are public. Forgot-password accepts `email`
