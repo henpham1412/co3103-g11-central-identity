@@ -16,6 +16,7 @@ import tools.jackson.databind.annotation.JsonDeserialize;
 import vn.edu.hcmut.co3103.identity.validation.BirthDate;
 import vn.edu.hcmut.co3103.identity.validation.StrictBirthDateDeserializer;
 import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLength;
+import vn.edu.hcmut.co3103.identity.validation.ValidProfilePatch;
 
 import java.time.LocalDate;
 import java.util.HashSet;
@@ -26,6 +27,7 @@ import java.util.Set;
 @Builder
 @NoArgsConstructor(onConstructor_ = @JsonCreator)
 @AllArgsConstructor
+@ValidProfilePatch
 public class UpdateProfileRequest {
 
     // Setters are called for explicit JSON nulls, but not for omitted properties.
@@ -75,6 +77,18 @@ public class UpdateProfileRequest {
 
     public boolean hasField(String field) {
         return suppliedFields.contains(field);
+    }
+
+    @JsonSetter("full_name")
+    public void setFullName(String fullName) {
+        this.fullName = fullName;
+        suppliedFields.add("full_name");
+    }
+
+    public boolean hasUpdates() {
+        // Builder/direct callers may supply values without invoking JSON setters.
+        return !suppliedFields.isEmpty() || fullName != null || avatarUrl != null || bio != null
+                || phoneNumber != null || dateOfBirth != null || locale != null || timezone != null;
     }
 
     @JsonSetter("avatar_url")

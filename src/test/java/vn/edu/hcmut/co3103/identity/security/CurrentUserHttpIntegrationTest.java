@@ -135,8 +135,8 @@ class CurrentUserHttpIntegrationTest {
         assertThat(updatedProfile.get("profile").get("bio").asText()).isEqualTo("Software Engineering Student");
         assertProfileRoutesMatch(token, updatedProfile);
 
-        // Omitted fields retain their values, including when full_name is explicitly null.
-        assertThat(patch(PATH, "{\"full_name\":null,\"bio\":\"Only bio changed\"}", token).statusCode()).isEqualTo(200);
+        // Omitted fields retain their values while the supplied bio changes.
+        assertThat(patch(PATH, "{\"bio\":\"Only bio changed\"}", token).statusCode()).isEqualTo(200);
         JsonNode partial = objectMapper.readTree(send(PATH, null, token).body());
         assertThat(partial.get("full_name")).isEqualTo(updatedProfile.get("full_name"));
         for (String field : new String[]{"avatar_url", "phone_number", "date_of_birth", "locale", "timezone"}) {
@@ -272,13 +272,43 @@ class CurrentUserHttpIntegrationTest {
                 .passwordHash("unused-test-hash").build());
         String token = jwtService.generateToken(user);
         for (String body : new String[]{"{\"bio\":\"New profile\"}", "{\"bio\":\"Updated profile\"}",
-                "{\"full_name\":\"Updated Name\"}", "{}", "{\"bio\":null}"}) {
+                "{\"full_name\":\"Updated Name\"}", "{\"bio\":null}"}) {
             var response = patch(path, body, token);
             assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
             Instant returned = Instant.parse(objectMapper.readTree(response.body()).get("updated_at").asText());
             Instant persisted = jdbc.queryForObject("SELECT updated_at FROM user_profiles WHERE user_id = ?",
                     (row, index) -> row.getTimestamp(1).toInstant(), user.getUserId());
             assertThat(returned).as("timestamp for PATCH %s", body).isEqualTo(persisted);
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"/users/me,false", "/users/me,true", "/api/v1/users/me,false", "/api/v1/users/me,true"})
+    void rejectedPatchesPreserveAccountAndProfileIncludingTimestamps(String path, boolean profileExists) throws Exception {
+        User user = userRepository.saveAndFlush(User.builder().email(email).fullName("Original Name")
+                .passwordHash("unused-test-hash").build());
+        String token = jwtService.generateToken(user);
+        if (profileExists) {
+            assertThat(patch(path, "{\"bio\":\"Original bio\",\"locale\":\"vi-VN\"}", token).statusCode())
+                    .isEqualTo(200);
+        }
+        var userBefore = jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId());
+        var profilesBefore = jdbc.queryForList("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId());
+
+        for (String body : new String[]{"{}", "{\"full_name\":null}",
+                "{\"full_name\":null,\"bio\":\"Must not persist\",\"locale\":null}"}) {
+            var response = patch(path, body, token);
+            assertThat(response.statusCode()).as("PATCH %s: %s", body, response.body()).isEqualTo(400);
+            var error = objectMapper.readTree(response.body());
+            assertErrorEnvelope(error);
+            assertThat(error.get("code").asText()).isEqualTo("VALIDATION_ERROR");
+            if (!body.equals("{}")) {
+                assertThat(validationMessage(error, "full_name")).isEqualTo("Full name must not be null");
+            }
+            assertThat(jdbc.queryForMap("SELECT * FROM users WHERE user_id = ?", user.getUserId()))
+                    .as("account values and updated_at after PATCH %s", body).isEqualTo(userBefore);
+            assertThat(jdbc.queryForList("SELECT * FROM user_profiles WHERE user_id = ?", user.getUserId()))
+                    .as("profile existence, values and updated_at after PATCH %s", body).isEqualTo(profilesBefore);
         }
     }
 

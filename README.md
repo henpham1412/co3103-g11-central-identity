@@ -298,7 +298,10 @@ A single LEFT JOIN projection reads account and profile from one committed datab
 including during concurrent PATCH. Unversioned `/users/me` and `/users/me/profile` additionally
 retain `id`, `fullName`, and `role: "USER"` for compatibility; this role is not an LMS permission.
 `PATCH /users/me` preserves omitted fields. Explicit `null` clears `avatar_url`, `bio`,
-`phone_number`, `date_of_birth`, `locale`, or `timezone`; `full_name: null` preserves the required name.
+`phone_number`, `date_of_birth`, `locale`, or `timezone`. An omitted `full_name` preserves the name;
+explicit `full_name: null` is rejected. Empty PATCH requests (`{}`) are also rejected.
+Both return HTTP 400 / `VALIDATION_ERROR` before profile writes, leaving account/profile values
+and timestamps unchanged and not creating a missing profile row (DOC-05 section 2.8).
 The returned `updated_at` is the flushed profile timestamp and exactly matches the stored value.
 Stored profile text rejects U+0000. `date_of_birth` must be between `1900-01-01` and today,
 inclusive. These field constraints return HTTP 400 / `VALIDATION_ERROR` with field details.

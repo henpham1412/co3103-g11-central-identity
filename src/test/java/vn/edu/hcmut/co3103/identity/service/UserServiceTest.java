@@ -221,8 +221,17 @@ class UserServiceTest {
     void updateProfileThrowsWhenUserNotFound() {
         when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> userService.updateProfile(userId, new UpdateProfileRequest()))
+        assertThatThrownBy(() -> userService.updateProfile(userId, UpdateProfileRequest.builder().bio("Update").build()))
                 .isInstanceOf(ResourceNotFoundException.class)
                 .hasMessage("User not found");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{}", "{\"full_name\":null}", "{\"full_name\":null,\"bio\":\"Must not persist\"}"})
+    void invalidPatchIsRejectedBeforeAnyRepositoryAccess(String json) {
+        var request = JsonMapper.builder().build().readValue(json, UpdateProfileRequest.class);
+        assertThatThrownBy(() -> userService.updateProfile(userId, request))
+                .isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(userRepository, userProfileRepository);
     }
 }

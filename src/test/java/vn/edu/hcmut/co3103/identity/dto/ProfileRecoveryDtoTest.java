@@ -130,7 +130,7 @@ class ProfileRecoveryDtoTest {
 
     @Test
     void allowsPartialProfileUpdatesAndNullableProfileFields() {
-        assertThat(validator.validate(mapper.readValue("{}", UpdateProfileRequest.class))).isEmpty();
+        assertThat(validator.validate(mapper.readValue("{}", UpdateProfileRequest.class))).isNotEmpty();
         var request = mapper.readValue("""
                 {"bio":"New biography","avatar_url":null,"phone_number":null,
                  "date_of_birth":null,"locale":null,"timezone":null}
@@ -168,9 +168,8 @@ class ProfileRecoveryDtoTest {
     }
 
     @ParameterizedTest
-    @org.junit.jupiter.params.provider.NullSource
     @ValueSource(strings = {"Nguyễn Văn An", "\u2003Nguyễn Văn An\u3000"})
-    void acceptsNullAndNonblankUnicodeFullNames(String fullName) {
+    void acceptsNonblankUnicodeFullNames(String fullName) {
         assertThat(validator.validate(UpdateProfileRequest.builder().fullName(fullName).build())).isEmpty();
     }
 
@@ -198,8 +197,13 @@ class ProfileRecoveryDtoTest {
         assertThat(validator.validate(mapper.readValue(
                 mapper.writeValueAsString(java.util.Map.of(field, "Nguyễn\nAn")), UpdateProfileRequest.class)))
                 .isEmpty();
-        assertThat(validator.validate(mapper.readValue("{\"" + field + "\":null}", UpdateProfileRequest.class)))
-                .isEmpty();
+        var nullViolations = validator.validate(mapper.readValue("{\"" + field + "\":null}", UpdateProfileRequest.class));
+        if (field.equals("full_name")) {
+            assertThat(nullViolations).extracting(violation -> violation.getPropertyPath().toString())
+                    .containsExactly("fullName");
+        } else {
+            assertThat(nullViolations).isEmpty();
+        }
     }
 
     @ParameterizedTest
@@ -259,6 +263,17 @@ class ProfileRecoveryDtoTest {
         assertThat(omitted.hasField(field)).isFalse();
         assertThat(explicitNull.hasField(field)).isTrue();
         assertThat(validator.validate(explicitNull)).isEmpty();
+    }
+
+    @Test
+    void rejectsExplicitNullNameButAllowsOmittingNameFromAPartialUpdate() {
+        var omitted = mapper.readValue("{\"bio\":\"Updated\"}", UpdateProfileRequest.class);
+        var explicitNull = mapper.readValue("{\"full_name\":null,\"bio\":\"Updated\"}", UpdateProfileRequest.class);
+        assertThat(omitted.hasField("full_name")).isFalse();
+        assertThat(validator.validate(omitted)).isEmpty();
+        assertThat(explicitNull.hasField("full_name")).isTrue();
+        assertThat(validator.validate(explicitNull)).anySatisfy(violation ->
+                assertThat(violation.getPropertyPath().toString()).isEqualTo("fullName"));
     }
 
     @Test
