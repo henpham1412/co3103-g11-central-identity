@@ -1,10 +1,37 @@
 spring:
   application:
     name: co3103-g11-central-identity
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+      mail.smtp.starttls.required: true
+      mail.smtp.ssl.checkserveridentity: true
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 5000
+      mail.smtp.writetimeout: 5000
+      mail.debug: false
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/central_identity_dev}
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD}
+    hikari:
+      # Apply to every physical connection before SQL runs. Missing SET privileges fail startup.
+      # TERSE removes server-side DETAIL; disable statement/parameter dumps as well.
+      connection-init-sql: >-
+        SET log_error_verbosity = 'terse';
+        SET log_statement = 'none';
+        SET log_min_error_statement = 'panic';
+        SET log_parameter_max_length = 0;
+        SET log_parameter_max_length_on_error = 0;
+      data-source-properties:
+        # Omit row values from driver exception messages before Hibernate/JDBC can log them.
+        # Error headers, SQLSTATEs, and constraint names remain available for diagnostics.
+        logServerErrorDetail: "false"
 
   jpa:
     hibernate:
@@ -29,5 +56,12 @@ jwt:
   refresh-expiration-ms: ${JWT_REFRESH_EXPIRATION_MS:604800000}
 
 server:
+  # Preserve the socket peer for explicit proxy allowlisting in ClientIpResolver.
+  forward-headers-strategy: none
   port: ${SERVER_PORT:8080}
+
+app:
+  recovery:
+    token-key: ${RECOVERY_TOKEN_KEY:}
+    trusted-proxies: ${RECOVERY_TRUSTED_PROXIES:}
 

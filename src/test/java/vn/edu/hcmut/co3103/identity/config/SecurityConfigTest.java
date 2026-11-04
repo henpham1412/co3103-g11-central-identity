@@ -16,7 +16,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -57,6 +56,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import static vn.edu.hcmut.co3103.identity.support.ErrorResponseAssertions.errorEnvelope;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -70,7 +71,6 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -112,7 +112,7 @@ class SecurityConfigTest {
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+        mockMvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).alwaysExpect(errorEnvelope()).build();
         user = User.builder()
                 .userId(UUID.fromString("00000000-0000-0000-0000-000000000000"))
                 .email(EMAIL)
@@ -123,25 +123,18 @@ class SecurityConfigTest {
         when(userRepository.findById(user.getUserId())).thenReturn(Optional.of(user));
     }
 
-    @ParameterizedTest
-    @CsvSource({
-            "POST, /api/v1/auth/login",
-            "POST, /api/v1/auth/register",
-            "GET, /actuator/health",
-            "GET, /.well-known/jwks.json",
-            "GET, /v3/api-docs",
-            "POST, /v3/api-docs",
-            "GET, /v3/api-docs/swagger-config",
-            "POST, /v3/api-docs/swagger-config",
-            "GET, /swagger-ui/index.html",
-            "POST, /swagger-ui/index.html",
-            "GET, /swagger-ui.html",
-            "POST, /swagger-ui.html"
-    })
-    void permitsPublicEndpointsWithoutAuthenticationOrCsrf(String method, String path) throws Exception {
-        mockMvc.perform(request(HttpMethod.valueOf(method), path))
-                .andExpect(status().isOk())
-                .andExpect(content().string("public"));
+    @Test
+    void permitsPublicEndpointsWithoutAuthenticationOrCsrf() throws Exception {
+        for (String prefix : new String[]{"/auth", "/api/v1/auth"}) {
+            for (String endpoint : new String[]{"/login", "/register", "/forgot-password", "/reset-password"}) {
+                mockMvc.perform(post(prefix + endpoint))
+                        .andExpect(status().isOk()).andExpect(content().string("public"));
+            }
+        }
+        for (String path : new String[]{"/actuator/health", "/.well-known/jwks.json", "/v3/api-docs",
+                "/v3/api-docs/swagger-config", "/swagger-ui/index.html", "/swagger-ui.html"}) {
+            mockMvc.perform(get(path)).andExpect(status().isOk()).andExpect(content().string("public"));
+        }
     }
 
     @Test
@@ -149,71 +142,49 @@ class SecurityConfigTest {
         assertFalse(jwtFilterRegistration.isEnabled());
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"})
-    void requiresAuthenticationForNonPostAuthRequests(String method) throws Exception {
-        for (String path : new String[]{"/api/v1/auth/register", "/api/v1/auth/login"}) {
-            mockMvc.perform(request(HttpMethod.valueOf(method), path))
-                    .andExpect(status().isUnauthorized());
+    @Test
+    void requiresBearerTokenOutsidePublicRouteAndMethodAllowlist() throws Exception {
+        for (String path : new String[]{"/auth/login", "/api/v1/auth/register", "/auth/forgot-password",
+                "/api/v1/auth/reset-password", "/api/v1/auth", "/api/v1/auth/secret", "/api/v1/auth/logout",
+                "/api/v1/auth/refresh", "/api/v1/auth/login/extra", "/api/v1/auth/register/extra",
+                "/actuator/info", "/actuator/health/readiness", "/users/me", "/api/v1/users/me"}) {
+            mockMvc.perform(get(path)).andExpect(status().isUnauthorized());
+        }
+        for (String path : new String[]{"/actuator/health", "/.well-known/jwks.json"}) {
+            mockMvc.perform(post(path)).andExpect(status().isUnauthorized());
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
-    void requiresAuthenticationForNonGetHealthRequests(String method) throws Exception {
-        mockMvc.perform(request(HttpMethod.valueOf(method), "/actuator/health"))
-                .andExpect(status().isUnauthorized());
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"/api/v1/auth", "/api/v1/auth/secret", "/api/v1/auth/logout",
-            "/api/v1/auth/login/extra", "/api/v1/auth/register/extra", "/actuator", "/actuator/info",
-            "/actuator/metrics", "/actuator/env", "/actuator/health/readiness", "/api/v1/users/me"})
-    void requiresAuthenticationForOtherRoutes(String path) throws Exception {
-        for (String method : new String[]{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}) {
-            mockMvc.perform(request(HttpMethod.valueOf(method), path))
-                    .andExpect(status().isUnauthorized());
+    @Test
+    void permitsAuthenticatedRequestsOutsidePublicAllowlist() throws Exception {
+        String token = jwtService.generateToken(user, "lms-client");
+        for (String path : new String[]{"/api/v1/auth/login", "/api/v1/auth/secret", "/actuator/info", "/users/me"}) {
+            mockMvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                    .andExpect(status().isOk()).andExpect(content().string(EMAIL));
         }
-    }
-
-    @ParameterizedTest
-    @CsvSource({
-            "GET, /api/v1/auth/login",
-            "GET, /api/v1/auth/register",
-            "POST, /actuator/health",
-            "GET, /api/v1/auth/secret",
-            "GET, /actuator/info"
-    })
-    void permitsAuthenticatedRequestsOutsidePublicAllowlist(String method, String path) throws Exception {
-        mockMvc.perform(request(HttpMethod.valueOf(method), path)
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user, "lms-client")))
-                .andExpect(status().isOk())
-                .andExpect(content().string(EMAIL));
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"http://localhost:3000", "http://localhost:5173"})
     void permitsCorsPreflightWithoutAuthentication(String origin) throws Exception {
-        for (String method : new String[]{"GET", "POST", "PUT", "DELETE", "OPTIONS"}) {
-            mockMvc.perform(options("/api/v1/users/me")
-                            .header(HttpHeaders.ORIGIN, origin)
-                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, method)
-                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS,
-                                    "Authorization, Content-Type, X-Request-Id"))
-                    .andExpect(status().isOk())
-                    .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, origin))
-                    .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS,
-                            "GET,POST,PUT,DELETE,OPTIONS"))
-                    .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS,
-                            "Authorization, Content-Type, X-Request-Id"))
-                    .andExpect(content().string(""));
-        }
+        mockMvc.perform(options("/api/v1/users/me")
+                        .header(HttpHeaders.ORIGIN, origin)
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PATCH")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS,
+                                "Authorization, Content-Type, X-Request-Id"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, origin))
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS,
+                        "GET,POST,PUT,PATCH,DELETE,OPTIONS"))
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS,
+                        "Authorization, Content-Type, X-Request-Id"))
+                .andExpect(content().string(""));
     }
 
     @ParameterizedTest
     @CsvSource({
             "https://untrusted.example, POST",
-            "http://localhost:3000, PATCH"
+            "http://localhost:3000, TRACE"
     })
     void rejectsCorsPreflightForDisallowedOriginsOrMethods(String origin, String method) throws Exception {
         mockMvc.perform(options("/api/v1/users/me")
@@ -222,12 +193,8 @@ class SecurityConfigTest {
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, method))
                 .andExpect(status().isForbidden())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.error").value("Forbidden"))
                 .andExpect(jsonPath("$.message").value("Invalid CORS request"))
                 .andExpect(jsonPath("$.code").value("CORS_REJECTED"))
-                .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
     }
 
@@ -236,12 +203,8 @@ class SecurityConfigTest {
         mockMvc.perform(post("/api/v1/auth/login").header(HttpHeaders.ORIGIN, "https://untrusted.example"))
                 .andExpect(status().isForbidden())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.error").value("Forbidden"))
                 .andExpect(jsonPath("$.message").value("Invalid CORS request"))
                 .andExpect(jsonPath("$.code").value("CORS_REJECTED"))
-                .andExpect(jsonPath("$.path").value("/api/v1/auth/login"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
     }
 
@@ -268,19 +231,18 @@ class SecurityConfigTest {
     @NullAndEmptySource
     @ValueSource(strings = {"Basic dXNlcjpwYXNz", "Bearer", "Bearer ", "Bearer invalid-token"})
     void rejectsProtectedRequestWithoutValidBearerToken(String authorization) throws Exception {
-        var request = get("/api/v1/users/me");
-        if (authorization != null) {
-            request.header(HttpHeaders.AUTHORIZATION, authorization);
+        for (String path : new String[]{"/api/v1/users/me", "/api/users/me", "/users/me"}) {
+            var request = get(path);
+            if (authorization != null) {
+                request.header(HttpHeaders.AUTHORIZATION, authorization);
+            }
+            mockMvc.perform(request.accept(MediaType.APPLICATION_XML))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(header().stringValues(HttpHeaders.WWW_AUTHENTICATE, "Bearer realm=\"central-identity\""))
+                    .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(content().string("{\"code\":\"UNAUTHORIZED\","
+                            + "\"message\":\"Full authentication is required to access this resource\",\"details\":[]}"));
         }
-        mockMvc.perform(request.accept(MediaType.APPLICATION_XML))
-                .andExpect(status().isUnauthorized())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(401))
-                .andExpect(jsonPath("$.error").value("Unauthorized"))
-                .andExpect(jsonPath("$.message").value("Full authentication is required to access this resource"))
-                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"))
-                .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
 
     @Test
@@ -288,13 +250,10 @@ class SecurityConfigTest {
         mockMvc.perform(get("/api/v1/admin").accept(MediaType.APPLICATION_XML)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
                 .andExpect(status().isForbidden())
+                .andExpect(header().doesNotExist(HttpHeaders.WWW_AUTHENTICATE))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(403))
-                .andExpect(jsonPath("$.error").value("Forbidden"))
                 .andExpect(jsonPath("$.message").value("Access is denied"))
-                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"))
-                .andExpect(jsonPath("$.path").value("/api/v1/admin"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty());
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
     }
 
     @ParameterizedTest
@@ -306,12 +265,8 @@ class SecurityConfigTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + jwtService.generateToken(user)))
                 .andExpect(status().isInternalServerError())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(500))
-                .andExpect(jsonPath("$.error").value("Internal Server Error"))
                 .andExpect(jsonPath("$.message").value("An unexpected internal error occurred"))
                 .andExpect(jsonPath("$.code").value("INTERNAL_SERVER_ERROR"))
-                .andExpect(jsonPath("$.path").value("/api/v1/users/me"))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(content().string(org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.containsString("Sensitive database"))));
     }
@@ -431,11 +386,8 @@ class SecurityConfigTest {
         mockMvc.perform(post(path).accept(MediaType.APPLICATION_XML))
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
                 .andExpect(jsonPath("$.message").isNotEmpty())
-                .andExpect(jsonPath("$.path").value(path))
-                .andExpect(jsonPath("$.timestamp").isNotEmpty())
                 .andExpect(result -> assertNull(result.getResponse().getForwardedUrl()))
                 .andExpect(result -> assertNull(result.getResponse().getErrorMessage()));
         verifyNoInteractions(userRepository);

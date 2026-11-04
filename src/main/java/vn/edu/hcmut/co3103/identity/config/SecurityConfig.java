@@ -1,5 +1,6 @@
 package vn.edu.hcmut.co3103.identity.config;
 
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
@@ -7,6 +8,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -35,6 +37,7 @@ import vn.edu.hcmut.co3103.identity.exception.ApiErrorResponse;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtAuthenticationFilter;
 import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
+import vn.edu.hcmut.co3103.identity.security.SecurityAudit;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -64,8 +67,11 @@ public class SecurityConfig {
                 .addFilterAt(jsonCorsFilter(objectMapper), CorsFilter.class)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
+                        .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.POST, "/auth/register", "/auth/login",
-                                "/api/v1/auth/register", "/api/v1/auth/login").permitAll()
+                                "/api/v1/auth/register", "/api/v1/auth/login",
+                                "/auth/forgot-password", "/auth/reset-password",
+                                "/api/v1/auth/forgot-password", "/api/v1/auth/reset-password").permitAll()
                         .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
                         .requestMatchers(HttpMethod.GET, "/.well-known/jwks.json").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
@@ -89,7 +95,7 @@ public class SecurityConfig {
         filter.setCorsProcessor(new DefaultCorsProcessor() {
             @Override
             protected void rejectRequest(ServerHttpResponse response) {
-                // Leave the body uncommitted so processRequest can include the request path in JSON.
+                // Leave the body uncommitted so processRequest can write the JSON envelope.
                 response.setStatusCode(HttpStatus.FORBIDDEN);
             }
 
@@ -111,10 +117,13 @@ public class SecurityConfig {
                                            HttpServletResponse response, HttpStatus status,
                                            String code, String message) throws IOException {
         response.setStatus(status.value());
+        if (status == HttpStatus.UNAUTHORIZED) {
+            SecurityAudit.failure("authentication_failed", null, null, "authentication_required", request);
+            response.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Bearer realm=\"central-identity\"");
+        }
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()
-                .status(status.value()).error(status.getReasonPhrase()).code(code).message(message)
-                .path(request.getRequestURI()).build());
+                .code(code).message(message).build());
     }
 
     @Bean
@@ -123,9 +132,7 @@ public class SecurityConfig {
             response.setStatus(HttpStatus.BAD_REQUEST.value());
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()
-                    .status(HttpStatus.BAD_REQUEST.value()).error(HttpStatus.BAD_REQUEST.getReasonPhrase())
-                    .code("INVALID_REQUEST").message("Request was rejected because its format is invalid")
-                    .path(request.getRequestURI()).build());
+                    .code("BAD_REQUEST").message("Request was rejected because its format is invalid").build());
         };
     }
 
@@ -133,7 +140,7 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(corsAllowedOrigins);
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

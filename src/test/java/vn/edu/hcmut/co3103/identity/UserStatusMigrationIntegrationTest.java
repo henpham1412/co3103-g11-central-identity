@@ -46,7 +46,7 @@ class UserStatusMigrationIntegrationTest {
             }
 
             Flyway latest = Flyway.configure().dataSource(dataSource).schemas(schema)
-                    .defaultSchema(schema).load();
+                    .defaultSchema(schema).target("3").load();
             assertThat(latest.migrate().migrationsExecuted).isEqualTo(1);
             assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("3");
             latest.validate();

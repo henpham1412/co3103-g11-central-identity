@@ -22,15 +22,18 @@ public class LoginRequest {
 
     @NotBlank(message = "Email is required")
     @Email(message = "Invalid email format")
+    @Utf8ByteLength(message = "Email must be valid Unicode")
     @Size(max = 254, message = "Email must not exceed 254 characters")
     private String email;
 
     @NotBlank(message = "Password is required")
-    @Utf8ByteLength(max = 72, message = "Password must not exceed 72 bytes")
+    @Utf8ByteLength(max = 72, message = "Password must be valid Unicode and not exceed 72 UTF-8 bytes")
     private String password;
 
     @Size(min = 1, max = 100, message = "Client ID must be between 1 and 100 characters")
     @Pattern(regexp = "\\S+", message = "Client ID must not contain whitespace")
+    @Utf8ByteLength(message = "Client ID must be valid Unicode")
+    @Pattern(regexp = "[^\\x00]*", message = "Client ID must not contain null characters")
     @JsonProperty("client_id")
     private String clientId;
 

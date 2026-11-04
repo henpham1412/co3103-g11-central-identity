@@ -1,37 +1,29 @@
 package vn.edu.hcmut.co3103.identity.exception;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import lombok.AllArgsConstructor;
 import lombok.Builder;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
+import org.springframework.http.HttpStatus;
 
-import java.time.Instant;
-import java.util.Map;
+import java.util.List;
 
-@JsonInclude(JsonInclude.Include.NON_NULL)
-@Getter
-@Setter
+/** DOC-05 section 1.8: every error has exactly these three JSON members. */
 @Builder
-@NoArgsConstructor
-@AllArgsConstructor
-public class ApiErrorResponse {
+public record ApiErrorResponse(String code, String message, List<?> details) {
 
-    private int status;
-    private String error;
-    private String code;
-    private String message;
+    public ApiErrorResponse {
+        details = details == null ? List.of() : List.copyOf(details);
+    }
 
-    @Builder.Default
-    private Instant timestamp = Instant.now();
-
-    private String path;
-
-    @JsonProperty("locked_until")
-    private Instant lockedUntil;
-
-    @JsonProperty("validation_errors")
-    private Map<String, String> validationErrors;
+    /** Sanitized fallback for errors raised before a controller or security handler runs. */
+    public static ApiErrorResponse forStatus(int statusCode) {
+        HttpStatus status = HttpStatus.resolve(statusCode);
+        if (status == null || !status.isError()) {
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+        String code = switch (status) {
+            case FORBIDDEN -> "ACCESS_DENIED";
+            case NOT_FOUND -> "RESOURCE_NOT_FOUND";
+            default -> status.name();
+        };
+        return new ApiErrorResponse(code, status.getReasonPhrase(), List.of());
+    }
 }

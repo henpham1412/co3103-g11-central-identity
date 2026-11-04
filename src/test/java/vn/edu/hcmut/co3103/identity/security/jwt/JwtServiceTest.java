@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -24,6 +25,8 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.time.Instant;
 import java.util.Date;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.UUID;
@@ -593,9 +596,53 @@ class JwtServiceTest {
                 "fullName", user.getFullName(), "clientId", CLIENT_ID, "iss", properties.getIssuer()));
     }
 
+    @Test
+    void acceptsOmittedAudienceForExistingTokens() {
+        assertAccepted(signClaims(validClaims()));
+    }
+
+    @ParameterizedTest
+    @MethodSource("acceptedAudiences")
+    void acceptsAudienceContainingCentralIdentity(Object audience) {
+        Map<String, Object> claims = validClaims();
+        claims.put("aud", audience);
+        assertAccepted(signClaims(claims));
+    }
+
+    static Stream<Object> acceptedAudiences() {
+        return Stream.of("central-identity", List.of("central-identity"),
+                List.of("lms-client", "central-identity"));
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @MethodSource("rejectedAudiences")
+    void rejectsForeignOrMalformedAudience(Object audience) {
+        Map<String, Object> claims = validClaims();
+        claims.put("aud", audience);
+        assertRejected(signClaims(claims));
+    }
+
+    static Stream<Object> rejectedAudiences() {
+        return Stream.of("other-service", CLIENT_ID, "CENTRAL-IDENTITY", " central-identity ",
+                List.of("other-service", CLIENT_ID), "", " ", List.of(),
+                123, true, Map.of("value", "central-identity"),
+                List.of("central-identity", 123), List.of("central-identity", true),
+                Arrays.asList("central-identity", null), List.of("central-identity", ""));
+    }
+
+    private void assertAccepted(String token) {
+        assertTrue(jwtService.isTokenValid(token));
+        assertTrue(jwtService.isTokenValid(token, identityDetails));
+        assertEquals(EMAIL, jwtService.extractEmail(token));
+        assertEquals(user.getUserId().toString(), jwtService.extractUserId(token));
+    }
+
     private String signClaims(Map<String, Object> claims) {
         Map<String, Object> payload = new HashMap<>(claims);
-        payload.put("exp", Instant.now().plusSeconds(60).getEpochSecond());
+        if (!payload.containsKey("exp")) {
+            payload.put("exp", Instant.now().plusSeconds(60).getEpochSecond());
+        }
         // Sign raw JSON so the builder cannot reject malformed reserved claims before our parser sees them.
         return Jwts.builder().header().keyId(keyId).and()
                 .content(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsBytes(payload))
@@ -608,5 +655,44 @@ class JwtServiceTest {
         assertThrows(JwtException.class, () -> jwtService.extractEmail(token));
         assertThrows(JwtException.class, () -> jwtService.extractUserId(token));
         assertThrows(JwtException.class, () -> jwtService.extractUsername(token));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"exp", "iat", "nbf"})
+    void rejectsNonNumericTemporalClaimsBeforeCoercion(String name) {
+        for (Object value : new Object[]{"1741234567", null, true, false, Map.of(),
+                Map.of("value", 1741234567), List.of(), List.of(1741234567), "NaN", "Infinity"}) {
+            Map<String, Object> claims = validClaims();
+            claims.put(name, value);
+            assertRejected(signClaims(claims));
+        }
+        Map<String, Object> claims = validClaims();
+        claims.put("exp", Instant.now().plusSeconds(60).getEpochSecond());
+        for (String nonFinite : List.of("1e309", "-1e309", "NaN", "Infinity", "-Infinity")) {
+            claims.remove(name);
+            String json = tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(claims);
+            String payload = json.substring(0, json.length() - 1) + ",\"" + name + "\":" + nonFinite + "}";
+            assertRejected(Jwts.builder().header().keyId(keyId).and()
+                    .content(payload.getBytes(StandardCharsets.UTF_8)).signWith(signingKey, Jwts.SIG.RS256).compact());
+        }
+    }
+
+    @Test
+    void acceptsFiniteIntegerAndFractionalNumericDatesAndOptionalAbsence() {
+        assertAccepted(signClaims(validClaims()));
+        for (double fraction : new double[]{0, 0.25}) {
+            Map<String, Object> claims = validClaims();
+            claims.put("exp", Instant.now().plusSeconds(120).getEpochSecond() + fraction);
+            claims.put("iat", Instant.now().minusSeconds(60).getEpochSecond() + fraction);
+            claims.put("nbf", Instant.now().minusSeconds(60).getEpochSecond() + fraction);
+            assertAccepted(signClaims(claims));
+        }
+    }
+
+    @Test
+    void expirationRemainsRequiredWithOtherwiseValidIdentityClaims() {
+        assertRejected(Jwts.builder().header().keyId(keyId).and()
+                .content(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsBytes(validClaims()))
+                .signWith(signingKey, Jwts.SIG.RS256).compact());
     }
 }

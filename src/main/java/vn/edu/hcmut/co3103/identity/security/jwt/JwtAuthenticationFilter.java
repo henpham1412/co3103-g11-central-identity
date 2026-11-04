@@ -18,6 +18,7 @@ import tools.jackson.databind.ObjectMapper;
 import vn.edu.hcmut.co3103.identity.exception.ApiErrorResponse;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.IdentityUserDetails;
+import vn.edu.hcmut.co3103.identity.security.SecurityAudit;
 
 import java.io.IOException;
 import java.util.UUID;
@@ -43,6 +44,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 // Extraction verifies the signature and the complete, canonical identity contract.
                 userId = UUID.fromString(jwtService.extractUserId(token));
             } catch (JwtException | IllegalArgumentException exception) {
+                SecurityAudit.failure("authentication_failed", null, null, "invalid_jwt", request);
                 // Only token parsing failures are treated as invalid credentials.
                 filterChain.doFilter(request, response);
                 return;
@@ -61,7 +63,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         var context = SecurityContextHolder.createEmptyContext();
                         context.setAuthentication(authentication);
                         SecurityContextHolder.setContext(context);
+                    } else {
+                        SecurityAudit.failure("authentication_failed", userId.toString(), null,
+                                "invalid_identity_or_account", request);
                     }
+                } else {
+                    SecurityAudit.failure("authentication_failed", userId.toString(), null,
+                            "unknown_user", request);
                 }
             } catch (RuntimeException exception) {
                 // Infrastructure failures (including transaction creation) are server errors, not bad tokens.
@@ -69,11 +77,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.builder()
-                        .status(HttpServletResponse.SC_INTERNAL_SERVER_ERROR)
-                        .error("Internal Server Error")
                         .code("INTERNAL_SERVER_ERROR")
-                        .message("An unexpected internal error occurred")
-                        .path(request.getRequestURI()).build());
+                        .message("An unexpected internal error occurred").build());
                 return;
             }
         }

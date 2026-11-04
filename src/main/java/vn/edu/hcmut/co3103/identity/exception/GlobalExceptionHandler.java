@@ -3,6 +3,7 @@ package vn.edu.hcmut.co3103.identity.exception;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -17,20 +18,48 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import tools.jackson.databind.util.NamingStrategyImpls;
+import vn.edu.hcmut.co3103.identity.dto.auth.request.ForgotPasswordRequest;
+import vn.edu.hcmut.co3103.identity.dto.auth.request.ResetPasswordRequest;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
+import vn.edu.hcmut.co3103.identity.dto.auth.request.RegisterRequest;
+import vn.edu.hcmut.co3103.identity.dto.auth.request.LoginRequest;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLengthValidator;
+import vn.edu.hcmut.co3103.identity.security.SecurityAudit;
 
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
+
+    private static final String BEARER_CHALLENGE = "Bearer realm=\"central-identity\"";
+
+    @ExceptionHandler(RecoveryUnavailableException.class)
+    public ResponseEntity<ApiErrorResponse> handleRecoveryUnavailable(
+            RecoveryUnavailableException exception, HttpServletRequest request) {
+        HttpStatus status = exception.isRateLimited() ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.SERVICE_UNAVAILABLE;
+        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).header("Retry-After", "60")
+                .body(errorResponse(status, exception.getMessage(), request)
+                        .code(exception.isRateLimited() ? "RECOVERY_RATE_LIMITED" : "RECOVERY_UNAVAILABLE").build());
+    }
+
+    @ExceptionHandler(InvalidPasswordResetTokenException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidPasswordResetToken(
+            InvalidPasswordResetTokenException exception, HttpServletRequest request) {
+        SecurityAudit.failure("authentication_failed", null, "central-identity", "invalid_reset_token", request);
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).contentType(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.WWW_AUTHENTICATE, BEARER_CHALLENGE)
+                .body(errorResponse(HttpStatus.UNAUTHORIZED, exception.getMessage(), request)
+                        .code("INVALID_OR_EXPIRED_RESET_TOKEN").build());
+    }
 
     @ExceptionHandler(DuplicateEmailException.class)
     public ResponseEntity<ApiErrorResponse> handleDuplicateEmail(
             DuplicateEmailException exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(errorResponse(HttpStatus.CONFLICT, exception.getMessage(), request)
+                .body(errorResponse(HttpStatus.CONFLICT, DuplicateEmailException.MESSAGE, request)
                         .code("EMAIL_ALREADY_REGISTERED").build());
     }
 
@@ -41,7 +70,7 @@ public class GlobalExceptionHandler {
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(errorResponse(HttpStatus.CONFLICT,
-                            "Data conflicts with an existing record", request)
+                            DuplicateEmailException.MESSAGE, request)
                             .code("EMAIL_ALREADY_REGISTERED").build());
         }
         if (!DataIntegrityViolationClassifier.isRequestDataViolation(exception)) {
@@ -65,6 +94,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleInvalidCredentials(
             InvalidCredentialsException exception, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .header(HttpHeaders.WWW_AUTHENTICATE, BEARER_CHALLENGE)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.UNAUTHORIZED, exception.getMessage(), request)
                         .code("INVALID_CREDENTIALS").build());
@@ -77,7 +107,7 @@ public class GlobalExceptionHandler {
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.LOCKED, exception.getMessage(), request)
                         .code("LOGIN_TEMPORARILY_LOCKED")
-                        .lockedUntil(exception.getLockedUntil())
+                        .details(List.of(Map.of("locked_until", exception.getLockedUntil())))
                         .build());
     }
 
@@ -95,7 +125,7 @@ public class GlobalExceptionHandler {
             InvalidClientException exception, HttpServletRequest request) {
         return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, exception.getMessage(), request)
-                        .code("INVALID_CLIENT").build());
+                        .code("BAD_REQUEST").build());
     }
 
     @ExceptionHandler(InvalidRedirectUriException.class)
@@ -103,7 +133,7 @@ public class GlobalExceptionHandler {
             InvalidRedirectUriException exception, HttpServletRequest request) {
         return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, exception.getMessage(), request)
-                        .code("INVALID_REDIRECT_URI").build());
+                        .code("BAD_REQUEST").build());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -113,11 +143,27 @@ public class GlobalExceptionHandler {
         exception.getBindingResult().getFieldErrors().forEach(error ->
                 validationErrors.putIfAbsent(NamingStrategyImpls.SNAKE_CASE.translate(error.getField()),
                         error.getDefaultMessage()));
+        String code = "VALIDATION_ERROR";
+        Object target = exception.getBindingResult().getTarget();
+        if (target instanceof LoginRequest login && login.getClientId() != null
+                && (!Utf8ByteLengthValidator.isValid(login.getClientId(), Integer.MAX_VALUE)
+                    || login.getClientId().indexOf('\0') >= 0)) {
+            // Use the same client-context error as direct service calls, without echoing input.
+            return handleInvalidClient(new InvalidClientException(), request);
+        }
+        if (target instanceof RegisterRequest || target instanceof LoginRequest) {
+            code = "BAD_REQUEST";
+        } else if (target instanceof ForgotPasswordRequest && exception.getBindingResult().hasFieldErrors("email")) {
+            code = "BAD_REQUEST";
+        } else if (target instanceof ResetPasswordRequest && exception.getBindingResult().hasFieldErrors("newPassword")) {
+            code = "PASSWORD_POLICY_VIOLATION";
+        }
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
-                        .code("VALIDATION_ERROR")
-                        .validationErrors(validationErrors)
+                        .code(code)
+                        .details(validationErrors.entrySet().stream()
+                                .map(error -> Map.of("field", error.getKey(), "message", error.getValue())).toList())
                         .build());
     }
 
@@ -129,6 +175,25 @@ public class GlobalExceptionHandler {
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(HttpStatus.BAD_REQUEST,
                         "Required request body is missing or malformed", request).build());
+    }
+
+    @ExceptionHandler(InvalidEmailException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidEmail(
+            InvalidEmailException exception, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
+                        .code("BAD_REQUEST").details(List.of(Map.of("field", "email", "message", exception.getMessage()))).build());
+    }
+
+    @ExceptionHandler(PasswordPolicyViolationException.class)
+    public ResponseEntity<ApiErrorResponse> handlePasswordPolicy(
+            PasswordPolicyViolationException exception, HttpServletRequest request) {
+        boolean reset = request.getRequestURI().endsWith("/reset-password");
+        return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.BAD_REQUEST, "Validation failed", request)
+                        .code(reset ? "PASSWORD_POLICY_VIOLATION" : "BAD_REQUEST")
+                        .details(List.of(Map.of("field", reset ? "new_password" : "password",
+                                "message", exception.getMessage()))).build());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -186,7 +251,11 @@ public class GlobalExceptionHandler {
             return handleUnexpectedException(exception, request);
         }
         // Framework reasons and ProblemDetail properties may contain internal details.
-        return ResponseEntity.status(status).headers(exception.getHeaders())
+        var response = ResponseEntity.status(status).headers(exception.getHeaders());
+        if (status == HttpStatus.UNAUTHORIZED) {
+            response.headers(headers -> headers.set(HttpHeaders.WWW_AUTHENTICATE, BEARER_CHALLENGE));
+        }
+        return response
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(errorResponse(status, status.getReasonPhrase(), request).build());
     }
@@ -205,16 +274,13 @@ public class GlobalExceptionHandler {
             HttpStatus status, String message, HttpServletRequest request) {
         log.debug("Request {} failed with status {}: {}", request.getRequestURI(), status.value(), message);
         return ApiErrorResponse.builder()
-                .status(status.value())
-                .error(status.getReasonPhrase())
                 .code(switch (status) {
-                    case BAD_REQUEST -> "INVALID_REQUEST";
+                    case BAD_REQUEST -> "BAD_REQUEST";
                     case UNAUTHORIZED -> "UNAUTHORIZED";
                     case FORBIDDEN -> "ACCESS_DENIED";
                     case NOT_FOUND -> "RESOURCE_NOT_FOUND";
                     default -> status.name();
                 })
-                .message(message)
-                .path(request.getRequestURI());
+                .message(message);
     }
 }

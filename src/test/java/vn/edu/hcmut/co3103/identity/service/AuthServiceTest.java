@@ -40,6 +40,7 @@ import vn.edu.hcmut.co3103.identity.exception.AccountInactiveException;
 import vn.edu.hcmut.co3103.identity.exception.AccountLockedException;
 import vn.edu.hcmut.co3103.identity.exception.DuplicateEmailException;
 import vn.edu.hcmut.co3103.identity.exception.InvalidCredentialsException;
+import vn.edu.hcmut.co3103.identity.exception.InvalidEmailException;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
 
@@ -67,6 +68,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -96,6 +98,8 @@ class AuthServiceTest {
     private LoginPolicyProperties loginPolicyProperties = new LoginPolicyProperties();
     @InjectMocks
     private AuthService authService;
+    @Mock
+    private AccountNotificationService accountNotifications;
 
     private User user;
     private RegisterRequest registerRequest;
@@ -120,11 +124,43 @@ class AuthServiceTest {
         loginRequest = LoginRequest.builder().email(EMAIL).password(PASSWORD).build();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"password", "12345678", "PASSWORD", "qwertyuiop", "welcome1"})
+    void registrationRejectsCommonPasswordsBeforePersistenceOrEmail(String password) {
+        registerRequest.setPassword(password);
+        assertThrows(IllegalArgumentException.class, () -> authService.register(registerRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, accountNotifications);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedUnicode")
+    void directCredentialCallsRejectMalformedUnicodeBeforeEncodingOrLookup(String password) {
+        registerRequest.setPassword(password);
+        loginRequest.setPassword(password);
+        assertThrows(IllegalArgumentException.class, () -> authService.register(registerRequest));
+        assertThrows(InvalidCredentialsException.class, () -> authService.login(loginRequest));
+        registerRequest.setPassword(PASSWORD);
+        registerRequest.setFullName(password);
+        assertThrows(IllegalArgumentException.class, () -> authService.register(registerRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, jwtService, lmsClientRepository);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("vn.edu.hcmut.co3103.identity.support.UnicodeInputs#malformedEmails")
+    void directEmailCallsRejectMalformedUnicodeBeforeAnyLookupOrEncoding(String email) {
+        registerRequest.setEmail(email);
+        loginRequest.setEmail(email);
+        assertThrows(InvalidEmailException.class, () -> authService.register(registerRequest));
+        assertThrows(InvalidEmailException.class, () -> authService.login(loginRequest));
+        verifyNoInteractions(userRepository, passwordEncoder, jwtService, jwtProperties, lmsClientRepository);
+    }
+
     @Test
     void registerSuccess() {
         stubRegistration();
 
         RegisterResponse response = authService.register(registerRequest);
+        verify(accountNotifications).registrationConfirmed(EMAIL);
 
         assertAll(
                 () -> assertEquals(USER_ID, response.getUserId()),
@@ -155,7 +191,7 @@ class AuthServiceTest {
         DuplicateEmailException exception = assertThrows(DuplicateEmailException.class,
                 () -> authService.register(registerRequest));
 
-        assertEquals("Email already exists: " + EMAIL, exception.getMessage());
+        assertEquals("Email already registered", exception.getMessage());
         verify(userRepository, never()).saveAndFlush(any(User.class));
         verifyNoInteractions(passwordEncoder, jwtService, jwtProperties);
     }
@@ -173,7 +209,7 @@ class AuthServiceTest {
         DuplicateEmailException exception = assertThrows(DuplicateEmailException.class,
                 () -> transactionalService(transactionManager).register(registerRequest));
 
-        assertEquals("Email already exists: " + EMAIL, exception.getMessage());
+        assertEquals("Email already registered", exception.getMessage());
         var order = inOrder(userRepository, transactionManager);
         order.verify(userRepository).existsByEmail(EMAIL);
         order.verify(userRepository).saveAndFlush(any(User.class));
@@ -194,7 +230,7 @@ class AuthServiceTest {
 
         var exception = assertThrows(DuplicateEmailException.class, () -> authService.register(registerRequest));
 
-        assertEquals("Email already exists: " + EMAIL, exception.getMessage());
+        assertEquals("Email already registered", exception.getMessage());
     }
 
     @Test
@@ -334,22 +370,33 @@ class AuthServiceTest {
     }
 
     @Test
-    void loginPassesValidatedClientIdToTokenGeneration() {
+    void loginPassesPersistedClientIdToTokenGenerationAndResponse() {
         loginRequest.setClientId("lms-client");
         loginRequest.setRedirectUri("https://lms.example.com/auth/callback");
         when(lmsClientRepository.findByClientIdAndIsActiveTrue("lms-client"))
-                .thenReturn(Optional.of(LmsClient.builder().clientId("lms-client")
+                .thenReturn(Optional.of(LmsClient.builder().clientId("persisted-client")
                         .redirectUris(List.of("https://lms.example.com/auth/callback")).build()));
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
         when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
-        when(jwtService.generateToken(user, "lms-client")).thenReturn(TOKEN);
+        when(jwtService.generateToken(user, "persisted-client")).thenReturn(TOKEN);
         when(jwtProperties.getExpirationMs()).thenReturn(3_600_000L);
 
         AuthResponse response = authService.login(loginRequest);
         assertEquals(TOKEN, response.getAccessToken());
-        assertEquals("lms-client", response.getClientId());
+        assertEquals("persisted-client", response.getClientId());
 
-        verify(jwtService).generateToken(user, "lms-client");
+        verify(jwtService).generateToken(user, "persisted-client");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"client\ud800", "client\udfff", "client\0"})
+    void loginRejectsMalformedClientBeforeAnyRepositoryLookup(String clientId) {
+        loginRequest.setClientId(clientId);
+        loginRequest.setRedirectUri("https://lms.example.com/auth/callback");
+
+        assertThrows(InvalidClientException.class, () -> authService.login(loginRequest));
+
+        verifyNoInteractions(lmsClientRepository, userRepository, passwordEncoder, jwtService, jwtProperties);
     }
 
     @Test
@@ -405,8 +452,10 @@ class AuthServiceTest {
         Instant lockedUntil = user.getLockedUntil();
         assertFalse(lockedUntil.isBefore(before.plusSeconds(90)));
         assertFalse(lockedUntil.isAfter(Instant.now().plusSeconds(90)));
-        assertThrows(InvalidCredentialsException.class, () -> authService.login(loginRequest));
+        assertThrows(AccountLockedException.class, () -> authService.login(loginRequest));
         assertEquals(lockedUntil, user.getLockedUntil());
+        assertEquals(2, user.getFailedLoginAttempts());
+        verify(passwordEncoder, times(2)).matches(PASSWORD, PASSWORD_HASH);
         verifyNoInteractions(jwtService, jwtProperties);
     }
 
@@ -452,44 +501,24 @@ class AuthServiceTest {
 
     @ParameterizedTest
     @EnumSource(UserStatus.class)
-    void loginWhileLockedWithCorrectPasswordThrowsAccountLockedBeforeCheckingStatus(UserStatus status) {
+    void loginWhileLockedRejectsEveryPasswordWithoutHashComparisonOrStateChanges(UserStatus status) {
         Instant lockedUntil = Instant.now().plus(Duration.ofMinutes(10));
         user.setStatus(status);
         user.setFailedLoginAttempts(5);
         user.setLockedUntil(lockedUntil);
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
-        when(passwordEncoder.matches(PASSWORD, PASSWORD_HASH)).thenReturn(true);
-
-        AccountLockedException exception = assertThrows(AccountLockedException.class,
-                () -> authService.login(loginRequest));
-
-        assertEquals("Account is temporarily locked until " + lockedUntil, exception.getMessage());
-        assertEquals(lockedUntil, exception.getLockedUntil());
+        for (String password : List.of(PASSWORD, "WrongPassword123!")) {
+            loginRequest.setPassword(password);
+            AccountLockedException exception = assertThrows(AccountLockedException.class,
+                    () -> authService.login(loginRequest));
+            assertEquals("Account is temporarily locked until " + lockedUntil, exception.getMessage());
+            assertEquals(lockedUntil, exception.getLockedUntil());
+        }
         assertEquals(lockedUntil, user.getLockedUntil());
         assertEquals(5, user.getFailedLoginAttempts());
-        verify(userRepository, never()).save(any(User.class));
-        verify(passwordEncoder).matches(PASSWORD, PASSWORD_HASH);
-        verifyNoInteractions(jwtService, jwtProperties);
-    }
-
-    @ParameterizedTest
-    @EnumSource(UserStatus.class)
-    void loginWhileLockedWithWrongPasswordReturnsUnauthorizedAndDoesNotExtendLock(UserStatus status) {
-        Instant lockedUntil = Instant.now().plus(Duration.ofMinutes(10));
-        user.setStatus(status);
-        user.setFailedLoginAttempts(5);
-        user.setLockedUntil(lockedUntil);
-        stubFailedLogin();
-
-        InvalidCredentialsException exception = assertThrows(InvalidCredentialsException.class,
-                () -> authService.login(loginRequest));
-
-        assertEquals("Invalid email or password", exception.getMessage());
-        assertEquals(6, user.getFailedLoginAttempts());
-        assertEquals(lockedUntil, user.getLockedUntil());
         assertNull(user.getLastLoginAt());
-        verify(userRepository).save(user);
-        verifyNoInteractions(jwtService, jwtProperties);
+        verify(userRepository, never()).save(any(User.class));
+        verifyNoInteractions(passwordEncoder, jwtService, jwtProperties);
     }
 
     @Test
@@ -513,7 +542,7 @@ class AuthServiceTest {
         user.setLockedUntil(now);
         stubSuccessfulLogin();
 
-        try (MockedStatic<Instant> clock = mockStatic(Instant.class)) {
+        try (MockedStatic<Instant> clock = mockStatic(Instant.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
             clock.when(Instant::now).thenReturn(now);
 
             assertEquals(TOKEN, authService.login(loginRequest).getAccessToken());

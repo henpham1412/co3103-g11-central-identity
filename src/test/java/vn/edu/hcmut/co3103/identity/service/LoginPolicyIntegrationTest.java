@@ -48,7 +48,9 @@ class LoginPolicyIntegrationTest {
             assertThat(locked.getLockedUntil()).isBetween(before.plusSeconds(90), Instant.now().plusSeconds(90));
             assertThat(locked.getLastLoginAt()).isNull();
             assertThrows(AccountLockedException.class, () -> authService.login(correct));
-            assertThrows(InvalidCredentialsException.class, () -> authService.login(wrong));
+            assertThrows(AccountLockedException.class, () -> authService.login(wrong));
+            assertThat(userRepository.findById(registered.getUserId()).orElseThrow().getFailedLoginAttempts())
+                    .isEqualTo(2);
             assertThat(userRepository.findById(registered.getUserId()).orElseThrow().getLockedUntil())
                     .isEqualTo(locked.getLockedUntil());
             locked.setLockedUntil(Instant.now().minusSeconds(1));

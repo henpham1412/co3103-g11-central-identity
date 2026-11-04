@@ -19,14 +19,17 @@ import vn.edu.hcmut.co3103.identity.exception.AccountLockedException;
 import vn.edu.hcmut.co3103.identity.exception.DuplicateEmailException;
 import vn.edu.hcmut.co3103.identity.exception.DataIntegrityViolationClassifier;
 import vn.edu.hcmut.co3103.identity.exception.InvalidCredentialsException;
+import vn.edu.hcmut.co3103.identity.exception.InvalidEmailException;
 import vn.edu.hcmut.co3103.identity.exception.InvalidClientException;
 import vn.edu.hcmut.co3103.identity.exception.InvalidRedirectUriException;
 import vn.edu.hcmut.co3103.identity.repository.LmsClientRepository;
 import vn.edu.hcmut.co3103.identity.repository.UserRepository;
 import vn.edu.hcmut.co3103.identity.security.jwt.JwtService;
+import vn.edu.hcmut.co3103.identity.security.SecurityAudit;
+import vn.edu.hcmut.co3103.identity.validation.PasswordPolicy;
+import vn.edu.hcmut.co3103.identity.validation.Utf8ByteLengthValidator;
 
 import java.time.Instant;
-import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 @Service
@@ -44,17 +47,20 @@ public class AuthService {
     private final JwtProperties jwtProperties;
     private final LmsClientRepository lmsClientRepository;
     private final LoginPolicyProperties loginPolicyProperties;
+    private final AccountNotificationService accountNotifications;
 
     @Transactional(readOnly = false)
     public RegisterResponse register(RegisterRequest request) {
-        String password = request.getPassword();
-        if (password == null || password.isBlank() || password.length() < 8
-                || password.getBytes(StandardCharsets.UTF_8).length > 72) {
-            throw new IllegalArgumentException("Password does not meet the password policy");
+        if (!Utf8ByteLengthValidator.isValid(request.getEmail(), Integer.MAX_VALUE)) {
+            throw new InvalidEmailException();
+        }
+        PasswordPolicy.validate(request.getPassword());
+        if (!Utf8ByteLengthValidator.isValid(request.getFullName(), Integer.MAX_VALUE)) {
+            throw new IllegalArgumentException("Full name must be valid Unicode");
         }
         String email = request.getEmail().trim().toLowerCase(Locale.ROOT);
         if (userRepository.existsByEmail(email)) {
-            throw new DuplicateEmailException("Email already exists: " + email);
+            throw new DuplicateEmailException();
         }
 
         User user = User.builder()
@@ -69,11 +75,12 @@ public class AuthService {
             savedUser = userRepository.saveAndFlush(user);
         } catch (DataIntegrityViolationException e) {
             if (DataIntegrityViolationClassifier.isEmailUniqueViolation(e)) {
-                throw new DuplicateEmailException("Email already exists: " + email);
+                throw new DuplicateEmailException();
             }
             throw e;
         }
 
+        accountNotifications.registrationConfirmed(savedUser.getEmail());
         return RegisterResponse.builder()
                 .userId(savedUser.getUserId())
                 .email(savedUser.getEmail())
@@ -86,8 +93,29 @@ public class AuthService {
     @Transactional(readOnly = false,
             noRollbackFor = {InvalidCredentialsException.class, AccountLockedException.class})
     public AuthResponse login(LoginRequest request) {
+        try {
+            return authenticate(request);
+        } catch (InvalidCredentialsException | AccountLockedException | AccountInactiveException
+                 | InvalidClientException | InvalidRedirectUriException | InvalidEmailException exception) {
+            String reason = switch (exception) {
+                case AccountLockedException ignored -> "account_locked";
+                case AccountInactiveException ignored -> "account_inactive";
+                case InvalidClientException ignored -> "invalid_client";
+                case InvalidRedirectUriException ignored -> "invalid_redirect";
+                default -> "bad_credentials";
+            };
+            SecurityAudit.failure("login_failed", request.getEmail(),
+                    request.getClientId() == null ? "central-identity" : request.getClientId(), reason);
+            throw exception;
+        }
+    }
+
+    private AuthResponse authenticate(LoginRequest request) {
+        if (!Utf8ByteLengthValidator.isValid(request.getEmail(), Integer.MAX_VALUE)) {
+            throw new InvalidEmailException();
+        }
         // Also protect callers that bypass HTTP bean validation, before any BCrypt work.
-        if (request.getPassword() != null && request.getPassword().getBytes(StandardCharsets.UTF_8).length > 72) {
+        if (!Utf8ByteLengthValidator.isValid(request.getPassword(), 72)) {
             throw new InvalidCredentialsException("Invalid email or password");
         }
         String clientId = validateClientContext(request);
@@ -98,28 +126,29 @@ public class AuthService {
                     return new InvalidCredentialsException("Invalid email or password");
                 });
 
-        // Do not disclose status or lockout information until credentials have been verified.
-        boolean passwordMatches = passwordEncoder.matches(request.getPassword(), user.getPasswordHash());
         Instant now = Instant.now();
-        if (user.getLockedUntil() != null && !now.isBefore(user.getLockedUntil())) {
+        if (user.getLockedUntil() != null) {
+            // A live lock must prevent all password checks, regardless of account status.
+            if (now.isBefore(user.getLockedUntil())) {
+                throw new AccountLockedException(
+                        "Account is temporarily locked until " + user.getLockedUntil(), user.getLockedUntil());
+            }
             user.setLockedUntil(null);
             user.setFailedLoginAttempts(0);
         }
 
-        if (!passwordMatches) {
+        if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
             int attempts = (user.getFailedLoginAttempts() == null ? 0 : user.getFailedLoginAttempts()) + 1;
             user.setFailedLoginAttempts(attempts);
             if (attempts >= loginPolicyProperties.getMaxFailedAttempts() && user.getLockedUntil() == null) {
                 user.setLockedUntil(now.plus(loginPolicyProperties.getLockoutDuration()));
+                SecurityAudit.failureAfterCommit("account_lockout", user.getUserId().toString(), clientId,
+                        "failed_attempts_limit");
             }
             userRepository.save(user);
             throw new InvalidCredentialsException("Invalid email or password");
         }
 
-        if (user.getLockedUntil() != null) {
-            throw new AccountLockedException(
-                    "Account is temporarily locked until " + user.getLockedUntil(), user.getLockedUntil());
-        }
         if (user.getStatus() != UserStatus.ACTIVE) {
             throw new AccountInactiveException("Account is inactive");
         }
@@ -130,6 +159,7 @@ public class AuthService {
         userRepository.save(user);
         String token = jwtService.generateToken(user, clientId);
         long expiresInSeconds = jwtProperties.getExpirationMs() / 1000;
+        SecurityAudit.success("login_succeeded", user.getUserId().toString(), clientId);
         return AuthResponse.builder()
                 .accessToken(token)
                 .tokenType("Bearer")
@@ -149,6 +179,10 @@ public class AuthService {
             }
             return "central-identity";
         }
+        // JDBC replaces lone surrogates with '?'; reject them before resolving the client.
+        if (!Utf8ByteLengthValidator.isValid(clientId, Integer.MAX_VALUE) || clientId.indexOf('\0') >= 0) {
+            throw new InvalidClientException();
+        }
         var client = lmsClientRepository.findByClientIdAndIsActiveTrue(clientId)
                 .orElseThrow(InvalidClientException::new);
         // Compare the complete registered value; do not normalize or accept prefix matches.
@@ -156,6 +190,6 @@ public class AuthService {
                 || !client.getRedirectUris().contains(redirectUri)) {
             throw new InvalidRedirectUriException();
         }
-        return clientId;
+        return client.getClientId();
     }
 }
